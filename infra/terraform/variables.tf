@@ -54,6 +54,23 @@ variable "sqs_batch_size" {
   }
 }
 
+variable "presign_jwt_issuer" {
+  description = <<-EOT
+    OIDC issuer URL for the GET /reports JWT authorizer (e.g. https://cognito-idp.us-east-1.amazonaws.com/<pool-id>).
+    Empty (the default) leaves the route unauthenticated at the gateway; the presign function then
+    denies every request, because its header identity fallback is off unless
+    AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK is set explicitly. See docs/RUNBOOK.md section 6.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "presign_jwt_audience" {
+  description = "Audience (client id) the JWT authorizer accepts. Only used when presign_jwt_issuer is set."
+  type        = list(string)
+  default     = []
+}
+
 variable "dlq_max_receive_count" {
   description = "Receives before a message is moved to the dead-letter queue."
   type        = number

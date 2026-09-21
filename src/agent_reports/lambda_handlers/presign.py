@@ -6,11 +6,17 @@ an agent opens the mail a week later, this endpoint issues a new link instead of
 Authorisation is explicit and deny-by-default:
 
 * the caller identity comes from the API Gateway JWT claims (``requestContext.authorizer.claims.sub``
-  plus ``custom:role``) or, for the offline/moto path, from the ``X-Caller-Agent-Id`` /
-  ``X-Caller-Role`` headers;
+  plus ``custom:role``). The ``X-Caller-Agent-Id`` / ``X-Caller-Role`` header fallback used by the
+  offline path is **off unless ``AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK`` is explicitly set** -
+  headers are caller-controlled, so trusting them by default would be an authorisation bypass;
 * an agent may read **their own** report (``sub == agent_id``);
 * ``reports-admin`` / ``ops`` / ``finance`` roles may read any report;
 * everything else is a 403, and a missing identity is a 401. There is no "default allow" branch.
+
+The gateway route is configured with a JWT authorizer when ``presign_jwt_issuer`` is set in
+Terraform (``infra/terraform/lambda.tf``); with the default empty issuer the route is unauthenticated
+at the gateway and the function is the only gate - it then denies every request that carries no
+claims, which is every request. See docs/RUNBOOK.md §6.
 
 Request:  ``GET /reports?agent_id=AGT-000123&date=2026-09-20``
 Response: 200 ``{"url", "expires_at", "expires_in", "agent_id", "report_date", "report_key"}``
@@ -38,14 +44,23 @@ PRIVILEGED_ROLES = frozenset({"reports-admin", "ops", "finance"})
 JSON_HEADERS = {"Content-Type": "application/json", "Cache-Control": "no-store"}
 
 
-def caller_identity(event: Mapping[str, Any]) -> tuple[str, str]:
-    """Return ``(caller_id, role)`` from API Gateway claims or fallback headers."""
+def caller_identity(
+    event: Mapping[str, Any], *, allow_header_fallback: bool = False
+) -> tuple[str, str]:
+    """Return ``(caller_id, role)`` from API Gateway claims.
+
+    The header fallback is **off unless explicitly enabled** (``allow_header_fallback``, wired to
+    ``AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK``). Request headers are caller-controlled, so
+    trusting them as an identity is a full authorisation bypass: anyone who can reach the route can
+    claim to be any agent, or ``reports-admin``. With no claims and the fallback disabled this
+    returns ``("", "")``, which :func:`authorize` turns into a 401.
+    """
     request_context = event.get("requestContext") or {}
     authorizer = request_context.get("authorizer") or {}
     claims = authorizer.get("claims") or authorizer.get("jwt", {}).get("claims") or {}
     caller_id = str(claims.get("sub", "") or "")
     role = str(claims.get("custom:role", "") or "")
-    if not caller_id:
+    if not caller_id and allow_header_fallback:
         headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
         caller_id = str(headers.get("x-caller-agent-id", "") or "")
         role = role or str(headers.get("x-caller-role", "") or "")
@@ -110,7 +125,19 @@ def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
     params = event.get("queryStringParameters") or {}
     agent_id_raw = str(params.get("agent_id", "") or "")
     date_raw = str(params.get("date", "") or "")
-    caller_id, role = caller_identity(event)
+    caller_id, role = caller_identity(
+        event, allow_header_fallback=settings.allow_caller_header_fallback
+    )
+    if settings.allow_caller_header_fallback:
+        log_event(
+            _LOG,
+            "presign_header_identity_enabled",
+            level=30,
+            detail=(
+                "AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK is on: X-Caller-Agent-Id / "
+                "X-Caller-Role are trusted as identity. Never enable this outside local runs."
+            ),
+        )
 
     try:
         agent_id = validate_agent_id(agent_id_raw)

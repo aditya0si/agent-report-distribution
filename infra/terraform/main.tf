@@ -33,6 +33,9 @@ locals {
     AGENT_REPORTS_CHUNKER_MAX_POLICIES  = tostring(var.chunker_max_policies)
     AGENT_REPORTS_LOG_LEVEL             = "INFO"
   }
+  # NOTE: AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK is deliberately absent. It is a dev-only switch
+  # that makes the presign function trust caller-supplied X-Caller-Agent-Id / X-Caller-Role headers,
+  # which would let any caller read any agent's report. Default (unset) = off.
 }
 
 data "archive_file" "lambda_package" {

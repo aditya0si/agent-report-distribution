@@ -103,13 +103,38 @@ resource "aws_lambda_event_source_mapping" "dispatcher" {
   }
 }
 
-# The presign function sits behind an HTTP API. Authorisation happens in the function (deny by
-# default) against the JWT claims the authorizer injects.
+# The presign function sits behind an HTTP API. There are two gates and the README/RUNBOOK say
+# exactly which one is active:
+#   1. the gateway: a JWT authorizer, active as soon as `presign_jwt_issuer` is set (Cognito, Auth0,
+#      ... any OIDC issuer). With the default empty issuer the route is *unauthenticated at the
+#      gateway* and the function is the only gate;
+#   2. the function: deny-by-default against the claims the authorizer injects. The
+#      X-Caller-Agent-Id / X-Caller-Role header fallback is off unless the deployer explicitly sets
+#      AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK - this stack never sets it, so an unauthenticated
+#      request (or a spoofed header) is a 401 rather than another agent's report.
 resource "aws_apigatewayv2_api" "reports" {
   name          = "${var.name_prefix}-api"
   protocol_type = "HTTP"
 
   tags = { Role = "api" }
+}
+
+locals {
+  presign_jwt_enabled = var.presign_jwt_issuer != ""
+}
+
+resource "aws_apigatewayv2_authorizer" "presign_jwt" {
+  count = local.presign_jwt_enabled ? 1 : 0
+
+  api_id           = aws_apigatewayv2_api.reports.id
+  name             = "${var.name_prefix}-presign-jwt"
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+
+  jwt_configuration {
+    issuer   = var.presign_jwt_issuer
+    audience = var.presign_jwt_audience
+  }
 }
 
 resource "aws_apigatewayv2_stage" "reports" {
@@ -141,6 +166,9 @@ resource "aws_apigatewayv2_route" "get_report" {
   api_id    = aws_apigatewayv2_api.reports.id
   route_key = "GET /reports"
   target    = "integrations/${aws_apigatewayv2_integration.presign.id}"
+
+  authorization_type = local.presign_jwt_enabled ? "JWT" : "NONE"
+  authorizer_id      = local.presign_jwt_enabled ? aws_apigatewayv2_authorizer.presign_jwt[0].id : null
 }
 
 resource "aws_lambda_permission" "presign_api" {

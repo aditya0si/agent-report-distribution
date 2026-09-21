@@ -111,9 +111,21 @@ class TestCallerIdentity:
         event = api_event(caller="AGT-000007", role="ops")
         assert caller_identity(event) == ("AGT-000007", "ops")
 
-    def test_headers_are_the_fallback(self) -> None:
+    def test_headers_are_the_fallback_only_when_the_dev_flag_is_on(self) -> None:
+        """The header fallback is opt-in; the default must fail closed.
+
+        Headers are caller-controlled, so trusting them by default is an authorisation bypass: a
+        caller could present ``X-Caller-Agent-Id: AGT-000009`` + ``X-Caller-Role: reports-admin``
+        and read another agent's report.
+        """
         event = api_event(caller="AGT-000007", role="finance", via_claims=False)
-        assert caller_identity(event) == ("AGT-000007", "finance")
+        assert caller_identity(event, allow_header_fallback=True) == ("AGT-000007", "finance")
+        assert caller_identity(event) == ("", "")
+        assert caller_identity(event, allow_header_fallback=False) == ("", "")
+
+    def test_claims_still_win_when_the_dev_flag_is_on(self) -> None:
+        event = api_event(caller="AGT-000007", role="ops")
+        assert caller_identity(event, allow_header_fallback=True) == ("AGT-000007", "ops")
 
     def test_no_identity(self) -> None:
         assert caller_identity({}) == ("", "")
@@ -201,3 +213,77 @@ class TestHandler:
         response = handler(api_event())
         assert response["headers"]["Cache-Control"] == "no-store"
         assert response["headers"]["Content-Type"] == "application/json"
+
+
+class TestHeaderSpoofingIsOffByDefault:
+    """The reviewer's P1 authz bypass, pinned.
+
+    Before the fix, a request with no JWT claims but ``X-Caller-Agent-Id``/``X-Caller-Role`` headers
+    was authorised from those headers. In the deployed stack (no authorizer attached to the route)
+    that fallback was the *only* identity path, so anybody could read anybody's report.
+    """
+
+    def test_spoofed_admin_headers_are_rejected_by_default(
+        self, handler_env: Settings, zones: Zones, report_object: str
+    ) -> None:
+        response = handler(
+            api_event(agent_id=AGENT, caller="AGT-000009", role="reports-admin", via_claims=False)
+        )
+        assert response["statusCode"] == 401
+        assert body(response)["error"] == "unauthenticated"
+        assert "url" not in body(response)
+
+    def test_spoofed_own_agent_headers_are_rejected_by_default(
+        self, handler_env: Settings, zones: Zones, report_object: str
+    ) -> None:
+        """Even claiming to be the agent the report belongs to must not authenticate."""
+        response = handler(api_event(caller=AGENT, via_claims=False))
+        assert response["statusCode"] == 401
+
+    def test_spoofed_headers_deny_before_existence_is_checked(
+        self, handler_env: Settings, zones: Zones
+    ) -> None:
+        response = handler(api_event(agent_id="AGT-000042", caller="AGT-000042", via_claims=False))
+        assert response["statusCode"] == 401
+
+    def test_claims_are_unaffected_by_the_header_path(
+        self, handler_env: Settings, zones: Zones, report_object: str
+    ) -> None:
+        """Regression guard: the claims path still authorises normally."""
+        assert handler(api_event())["statusCode"] == 200
+        assert handler(api_event(caller="AGT-000002"))["statusCode"] == 403
+        assert handler(api_event(caller=None))["statusCode"] == 401
+
+    def test_the_dev_flag_is_off_unless_explicitly_set(
+        self, handler_env: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agent_reports.common.settings import ENV_PREFIX, load_settings
+
+        assert Settings().allow_caller_header_fallback is False
+        assert load_settings({}).allow_caller_header_fallback is False
+        assert (
+            load_settings(
+                {f"{ENV_PREFIX}ALLOW_CALLER_HEADER_FALLBACK": "false"}
+            ).allow_caller_header_fallback
+            is False
+        )
+        assert (
+            load_settings(
+                {f"{ENV_PREFIX}ALLOW_CALLER_HEADER_FALLBACK": "1"}
+            ).allow_caller_header_fallback
+            is True
+        )
+
+    def test_the_dev_flag_re_enables_the_headers_for_local_runs(
+        self,
+        handler_env: Settings,
+        zones: Zones,
+        report_object: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The documented local-only switch still works, so the offline path stays usable."""
+        from agent_reports.common.settings import ENV_PREFIX
+
+        monkeypatch.setenv(f"{ENV_PREFIX}ALLOW_CALLER_HEADER_FALLBACK", "1")
+        assert handler(api_event(caller=AGENT, via_claims=False))["statusCode"] == 200
+        assert handler(api_event(caller="AGT-000002", via_claims=False))["statusCode"] == 403

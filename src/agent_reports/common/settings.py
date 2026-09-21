@@ -56,6 +56,12 @@ class Settings:
     chunker_max_policies: int = 2_000_000
     chunker_shards: int = 1
     local_root: str | None = None
+    #: DEV ONLY, and off unless explicitly set. When true the presign handler accepts the
+    #: ``X-Caller-Agent-Id`` / ``X-Caller-Role`` request headers as the caller identity. That is a
+    #: *spoofable* identity - any caller can claim to be any agent or ``reports-admin`` - so it is
+    #: only meaningful for the offline/local path where no API Gateway JWT authorizer exists. The
+    #: deployed stack never sets it; see ``infra/terraform/main.tf`` and docs/RUNBOOK.md §6.
+    allow_caller_header_fallback: bool = False
 
     # ------------------------------------------------------------------ loading
     @classmethod
