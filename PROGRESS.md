@@ -98,3 +98,23 @@ Appended after each milestone. Newest entries at the bottom.
   green, 92% coverage**, terraform validate clean, secret grep empty, e2e green at 5,000 rows and at
   50,000 rows (see VERIFY.md for the transcripts).
 
+## 2026-09-21 - Milestone 8: hardening pass, gates re-run on the final tree
+
+- `LocalStorage` create-if-absent made atomic for *readers* as well as writers: `O_CREAT|O_EXCL`
+  publishes the name before the bytes, so a racing reader could see a zero-byte dispatch marker. The
+  bytes now go to a private temp file which is hard-linked into place (`os.link` is atomic and fails
+  if the target exists), with an `O_EXCL` fallback for filesystems without hard links.
+- `DispatchRecord.from_json` now raises `ConfigError` (with size/prefix context) instead of leaking a
+  bare `JSONDecodeError` from a corrupt marker in `state/`.
+- Split `build_spark_session` into a pure `session_config()` + a JVM-requiring `build_session()` so the
+  Spark configuration is unit-testable without Spark. The split exposed a real bug: the local-master
+  patience windows were `setdefault`-ed onto keys the cluster defaults had already set, so they were
+  silent no-ops (comment said 600 s, config kept 120 s) - now assigned, with four new tests.
+- The incomplete rename (`build_spark_session` still referenced in `__all__`, `main()` and
+  `tests/conftest.py`) was caught by `ruff check` (F822/F821) and `mypy`, not by the tests - recorded
+  in the VERIFY.md bug table.
+- Gates re-run on this tree: ruff + format clean (55 files), mypy 0 errors (49 files), **339 tests
+  green, 92% coverage** (2,396 statements, 136 missed), Spark module 5 passed, 5,000-row e2e `E2E OK`,
+  50,000-row e2e re-run, terraform validate clean, secret grep empty. README/VERIFY.md numbers updated
+  to match the new runs.
+

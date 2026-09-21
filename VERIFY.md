@@ -61,10 +61,10 @@ neither ships stubs, and both are listed explicitly in `pyproject.toml`.
 ```console
 $ .venv/Scripts/python.exe -m pytest tests -q --cov=agent_reports --cov-report=term-missing
 ........................................................................ [ 21%]
-........................................................................ [ 43%]
-........................................................................ [ 64%]
-........................................................................ [ 86%]
-.........................................                                [100%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+...................................................                      [100%]
 =============================== tests coverage ================================
 ______________ coverage: platform win32, python 3.11.16-final-0 _______________
 
@@ -75,7 +75,7 @@ src\agent_reports\common\__init__.py                      10      0      0      
 src\agent_reports\common\aggregation.py                  102      1     18      0    99%   191
 src\agent_reports\common\aws.py                           31      1      2      0    97%   96
 src\agent_reports\common\errors.py                        74      5     22      3    90%   218, 225, 234-236
-src\agent_reports\common\idempotency.py                  159     13     38      5    90%   98, 100, 161, 263, 305-310, 341-343
+src\agent_reports\common\idempotency.py                  162     13     38      5    90%   106, 108, 169, 271, 313-318, 349-351
 src\agent_reports\common\keys.py                         115      4     38      4    95%   106, 116, 198, 201
 src\agent_reports\common\logging_utils.py                 74      1     18      1    98%   86
 src\agent_reports\common\metrics.py                       50      1     18      1    97%   140
@@ -83,10 +83,10 @@ src\agent_reports\common\report.py                        74      0     18      
 src\agent_reports\common\retry.py                         75      0     24      1    99%   103->131
 src\agent_reports\common\roster.py                        82     21     38      9    68%   27, 32->30, 41-42, 46, 66, 78->77, 90->88, 102, 104, 115-127, 131-135
 src\agent_reports\common\settings.py                     109     12     42      3    86%   104, 108, 135, 138, 188-198
-src\agent_reports\common\storage.py                      186     27     54     12    82%   84, 86, 90, 93-97, 99, 112->116, 199, 207, 230, 239->241, 264, 269, 309, 322, 325, 328, 331-334, 339, 349, 354, 367-369
+src\agent_reports\common\storage.py                      191     27     54     12    82%   85, 87, 91, 94-98, 100, 113->117, 200, 208, 231, 240->242, 265, 270, 329, 342, 345, 348, 351-354, 359, 369, 374, 387-389
 src\agent_reports\emr\__init__.py                          2      0      0      0   100%
 src\agent_reports\emr\jobs\__init__.py                     2      0      0      0   100%
-src\agent_reports\emr\jobs\agent_report_job.py           175     16     28      6    89%   75->77, 84->97, 89->97, 361, 376, 484->487, 503-513, 517-530
+src\agent_reports\emr\jobs\agent_report_job.py           179     16     28      4    90%   111->113, 376, 391, 499->502, 518-528, 532-545
 src\agent_reports\ingest\__init__.py                       4      0      0      0   100%
 src\agent_reports\ingest\cli.py                           39      0      4      0   100%
 src\agent_reports\ingest\generator.py                    206      8     46      1    96%   99, 281-286, 304
@@ -100,13 +100,15 @@ src\agent_reports\lambda_handlers\presign.py              72      0     10      
 src\agent_reports\pipeline.py                            213      4     56      9    95%   193, 248->exit, 352->379, 377, 385->392, 388, 401->405, 412->410, 414
 src\agent_reports\testing.py                              65      8     14      4    82%   34, 38, 80-82, 113, 118, 124
 --------------------------------------------------------------------------------------------------
-TOTAL                                                   2384    136    572     64    92%
-333 passed in 211.93s (0:03:31)
+TOTAL                                                   2396    136    572     62    92%
+339 passed in 429.70s (0:07:09)
 ```
 
-**333 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 333 (they are marked
+**339 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 339 (they are marked
 `requires_jvm` but a JVM is present, so they ran — the suite would have printed a loud banner and
-reported them as skipped otherwise).
+reported them as skipped otherwise). The earlier runs recorded in this file said 333 and 316; the six
+added since are the four `session_config` tests and the two ledger/atomicity tests from the hardening
+pass described below.
 
 Real assertion counts by area, from the same run:
 
@@ -140,8 +142,11 @@ $ .venv/Scripts/python.exe -c "import agent_reports, agent_reports.pipeline; pri
 1.0.0
 
 $ .venv/Scripts/python.exe -m pytest tests/integration/test_spark_job.py -q
-5 passed in 24.62s
+5 passed in 60.35s
 ```
+
+(JVM startup dominates this module and varies run to run: 24.6 s on the run recorded earlier in this
+file's history, 60.4 s on the final re-run. The tests themselves are the same five.)
 
 The Lambda deployment package is produced by Terraform's `archive_file` data source
 (`infra/terraform/main.tf`), which zips `src/` — the same tree that is imported and exercised by every
@@ -167,8 +172,8 @@ cloudwatch metrics  : 10 published (AgentsDiscovered, BatchItemFailures, Dispatc
 pre-signed link     : HTTP 200, 1,421 bytes, matches report object: True
 sample report       : reports/dt=2026-09-20/agent_id=AGT-000001/report.csv
 manifest            : s3://agent-reports-processed/state/runs/dt=2026-09-20/manifest.json
-stage timings (s)   : generate=0.119, aggregate=1.497, fanout=1.601, dispatch=15.166
-duration            : 18.781 s (wall 20.577 s)
+stage timings (s)   : generate=0.090, aggregate=1.163, fanout=4.213, dispatch=35.293
+duration            : 41.825 s (wall 42.878 s)
 
 E2E OK
 ```
@@ -252,7 +257,7 @@ Success! The configuration is valid.
 
 ### Spark job, executed for real
 
-Part of the 316-test run, but worth calling out because it is the EMR deliverable:
+Part of the 339-test run, but worth calling out because it is the EMR deliverable:
 
 - `tests/integration/test_spark_job.py` starts a real `SparkSession` on `local[2]`, reads the CSV
   partitions, runs the shuffle, writes `partitionBy("agent_id")`, and finalises each agent's
@@ -281,6 +286,34 @@ Recorded because they are the honest measure of whether the tests do anything:
 | Spark: DETAIL rows not sorted by `policy_id` | Spark/chunker byte comparison | finaliser enforces the row order |
 | e2e at 50k rows stopped after 2,000 of 3,805 emails, queue half-full | the 50k e2e run (it failed loudly) | the dispatch batch budget is derived from the fan-out size instead of a fixed 200 |
 | quarantine date ignored the SQS message attribute (PascalCase vs camelCase) | unit test on `receive_records` | records are converted to the event source mapping's shape |
+| the local-master Spark patience windows were `setdefault`-ed onto keys the cluster defaults had already set, so they were silent no-ops (the comment promised 600 s, the config kept 120 s) | writing the `session_config` unit tests for the hardening pass | assigned instead of `setdefault`-ed, with the reason in a comment |
+| splitting `build_spark_session` into `session_config` + `build_session` left the old name in `__all__`, in `main()` and in `tests/conftest.py` — the module no longer imported cleanly | `ruff check` (F822/F821) and `mypy` (`name-defined`, `attr-defined`), i.e. the gates caught it before the test suite did | call sites and the RUNBOOK reference updated; the refactor is now covered by four JVM-free tests |
+
+## Hardening pass (the final tree)
+
+After the gates above had already passed, a last review pass changed four things and every gate was
+re-run on the result. This section exists so the transcripts above can be attributed to the tree that
+is committed:
+
+1. **`LocalStorage` create-if-absent is now atomic against readers, not just writers.**
+   `O_CREAT|O_EXCL` publishes the filename before the bytes exist, so a racing reader could observe a
+   zero-byte dispatch marker. The content is now written to a private temp file and hard-linked into
+   place (`os.link` is atomic and fails if the target exists), with an `O_EXCL` fallback for
+   filesystems without hard links. `test_create_if_absent_never_publishes_a_partial_file` pins it,
+   including that no temp file is left behind.
+2. **An unparseable dispatch marker is a `ConfigError`, not a bare `JSONDecodeError`.** The ledger's
+   `DispatchRecord.from_json` now raises the taxonomy's config error with the marker size and prefix in
+   context, so a corrupt marker in `state/` is reported as an operational problem instead of a stack
+   trace three frames down. Pinned by `test_marker_that_is_not_json_is_reported_as_a_config_error`.
+3. **The Spark session builder was split into `session_config` (pure) + `build_session` (needs a JVM)**
+   so the configuration is testable without Spark. That split exposed the `setdefault` no-op recorded
+   in the bug table above, and it is covered by four new JVM-free tests in
+   `tests/unit/test_spark_shaping.py`.
+4. **Docs** (`docs/RUNBOOK.md`) updated for the rename.
+
+The gates were then re-run on this tree: ruff + `ruff format --check` clean (55 files), mypy 0 errors
+(49 files), **339 tests passed, 92% coverage**, the Spark module 5 passed, the 5,000-row e2e `E2E OK`
+above, the 50,000-row e2e `E2E OK` below, `terraform fmt -check`/`validate` clean, secret grep empty.
 
 ## Reproduce all of it
 

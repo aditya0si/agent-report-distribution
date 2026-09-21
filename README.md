@@ -138,15 +138,15 @@ and the e2e output, are in [VERIFY.md](VERIFY.md).
 
 | Measurement | Result | Command |
 | --- | --- | --- |
-| Test suite | 333 passed, 0 failed, 0 skipped | `pytest tests -q` |
-| Coverage of `agent_reports` | 92% statements, 92% branches (136 of 2,384 statements missed) | `pytest tests --cov=agent_reports` |
+| Test suite | 339 passed, 0 failed, 0 skipped | `pytest tests -q` |
+| Coverage of `agent_reports` | 92% statements, 92% branches (136 of 2,396 statements missed) | `pytest tests --cov=agent_reports` |
 | Lint / format / types | ruff clean, `ruff format --check` clean, mypy 0 errors | `make lint typecheck` |
 | Terraform | `fmt -check` and `validate` clean (root module + EMR module) | `make tf-validate` |
 | Dataset generation | 52,471 rows in 0.83 s (38% headroom over the 50k target) | `agent-reports generate --rows 50000` |
 | Offline e2e | 5,000-row day: 381 agents, 381 reports, 381 emails, queue drained, pre-signed link verified byte-for-byte | `make e2e` |
 | Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, queue drained, link verified, 960 s wall (moto-bound) | `python scripts/e2e_local.py --rows 50000 --shards 4` |
 | Spark vs chunker | byte-identical reports for all 40 agents, `local[2]`, real shuffle | `pytest tests/integration/test_spark_job.py` |
-| Spark job runtime | the 5-test Spark module runs in 24.6 s including JVM + session start (`5 passed in 24.62s`) | `pytest tests/integration/test_spark_job.py -q` |
+| Spark job runtime | the 5-test Spark module runs in 25-60 s including JVM + session start (`5 passed in 60.35s` on the last run; JVM startup dominates and varies) | `pytest tests/integration/test_spark_job.py -q` |
 
 Exact commands, raw output and the honest gap list are in [VERIFY.md](VERIFY.md).
 
