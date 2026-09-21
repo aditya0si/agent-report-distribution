@@ -151,7 +151,10 @@ before the send and marked `sent` after it, and **every** write is conditional:
 - a fresh marker is created with `IfNoneMatch: *` (create-if-absent);
 - every update is a compare-and-set on the version read a moment earlier (`If-Match` on S3, an
   exclusive lock plus a content hash on the local filesystem), so two workers that both see the same
-  stale lease cannot both claim it;
+  stale lease cannot both claim it. On the S3 path `If-Match` is the *cross-process* guard (real S3
+  evaluates it server-side); inside one process the same write is also exclusive — a per-key lock plus
+  a re-read of the stored version — because the offline backend (moto) evaluates `If-Match` as a
+  compare followed by a write, with no lock in between, and so cannot decide a threaded race;
 - each claim mints a `lease_id`, and a `sent` marker is terminal: a late `mark_failed` from a worker
   whose send already succeeded returns the stored record and writes nothing.
 

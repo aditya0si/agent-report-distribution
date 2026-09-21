@@ -3,7 +3,8 @@
 The pipeline never calls boto3 directly for object I/O - it goes through :class:`Storage`. That is
 what makes the whole thing runnable with zero AWS cost:
 
-* ``S3Storage``  - ``s3://`` URIs, real pre-signed URLs, conditional writes (``IfNoneMatch``)
+* ``S3Storage``  - ``s3://`` URIs, real pre-signed URLs, conditional writes (``IfNoneMatch`` /
+  ``If-Match``) that are also exclusive *inside one process* (see :func:`_conditional_lock`)
 * ``LocalStorage`` - ``file://`` URIs / plain directories, atomic exclusive create, no pre-signing
 
 Every method takes a **store-relative key** (the strings produced by
@@ -18,6 +19,7 @@ import json
 import os
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -153,7 +155,13 @@ def open_zones(settings: Settings, client: Any = None) -> Zones:
 # --------------------------------------------------------------------------- S3
 @dataclass
 class S3Storage:
-    """Real S3 (or moto) storage."""
+    """Real S3 (or moto) storage.
+
+    Conditional writes are guarded twice: ``If-None-Match``/``If-Match`` on the request (real S3
+    evaluates those server-side, which is what separates two *processes*) and an in-process lock plus
+    a version re-read (which is what separates two *threads* of one process - see
+    :func:`_conditional_lock`).
+    """
 
     client: Any
     bucket: str
@@ -180,8 +188,22 @@ class S3Storage:
             "Body": data,
             "ContentType": content_type,
         }
-        if if_none_match:
-            request["IfNoneMatch"] = "*"
+        if not if_none_match:
+            self._put_object(request)
+            return self.uri_for(relative_key)
+        request["IfNoneMatch"] = "*"
+        # Create-if-absent, made exclusive inside this process as well as on the wire. A backend whose
+        # ``If-None-Match`` check is a compare *followed by* a write (moto does exactly that, with no
+        # lock in between) would otherwise let two racing workers create the same marker - and two
+        # markers created for one agent is two emails sent. ``DispatchLedger._create_only`` maps the
+        # ``FileExistsError`` this raises onto "lost the race".
+        with _conditional_lock(self.bucket, self.key_at(relative_key)):
+            if self._current_version(relative_key) is not None:
+                raise FileExistsError(self.uri_for(relative_key))
+            self._put_object(request)
+        return self.uri_for(relative_key)
+
+    def _put_object(self, request: dict[str, Any]) -> None:
         try:
             self.client.put_object(**request)
         except ParamValidationError as exc:  # pragma: no cover - very old botocore only
@@ -189,7 +211,27 @@ class S3Storage:
                 "this botocore build does not support conditional S3 writes",
                 context={"error": str(exc)},
             ) from exc
-        return self.uri_for(relative_key)
+
+    def _current_version(self, relative_key: str) -> str | None:
+        """The ETag the object has *right now*, or ``None`` when it does not exist.
+
+        The conditional writes call this inside the in-process lock, so a caller whose version went
+        stale is rejected by this process rather than by the backend - see
+        :meth:`put_bytes_if_version` for why that has to hold whatever the backend does.
+        """
+        try:
+            head = self.client.head_object(Bucket=self.bucket, Key=self.key_at(relative_key))
+        except ClientError as exc:
+            if _error_code(exc) in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+        version = str(head.get("ETag") or "")
+        if not version:
+            raise PermanentError(
+                "S3 returned no ETag, so a conditional write is impossible",
+                context={"key": relative_key},
+            )
+        return version
 
     def get_bytes(self, relative_key: str) -> bytes:
         response = self.client.get_object(Bucket=self.bucket, Key=self.key_at(relative_key))
@@ -218,26 +260,40 @@ class S3Storage:
     ) -> bool:
         """Compare-and-set: write only if the object still has *version*. ``False`` when it moved.
 
-        S3 evaluates ``If-Match`` server-side, so two writers that read the same version cannot both
-        succeed - which is exactly what makes a stale-lease claim exclusive.
+        Two guards, because there are two races to close:
+
+        * **Inside one process** the write is made exclusive by the per-key lock plus a re-read of the
+          object's current version within it. This is the half that does not depend on the backend:
+          moto evaluates ``If-Match`` as a compare *followed by* a write with no lock in between, so
+          two racing threads can both pass the comparison and both win. That is what CI saw - two
+          winners for one stale lease (run 35640872774) - while this machine happened to serialise the
+          threads. Lambda never runs two of our workers in one process, but a threaded caller, and
+          every offline test, does.
+        * **Across processes** the ``If-Match`` header is the guard: real S3 evaluates it server-side,
+          so two Lambda processes that read the same version cannot both write. That enforcement
+          cannot be verified offline - see
+          ``test_s3_put_object_requests_carry_the_conditional_headers`` for the half that can be
+          (the header is really sent).
         """
-        try:
-            self.client.put_object(
-                Bucket=self.bucket,
-                Key=self.key_at(relative_key),
-                Body=data,
-                ContentType=content_type,
-                IfMatch=version,
-            )
-        except ClientError as exc:
-            if _error_code(exc) in ("412", "PreconditionFailed", "ConditionalRequestConflict"):
+        key = self.key_at(relative_key)
+        with _conditional_lock(self.bucket, key):
+            current = self._current_version(relative_key)
+            if current is None or current != version:
                 return False
-            raise
-        except ParamValidationError as exc:  # pragma: no cover - very old botocore only
-            raise PermanentError(
-                "this botocore build does not support conditional S3 writes",
-                context={"error": str(exc)},
-            ) from exc
+            try:
+                self._put_object(
+                    {
+                        "Bucket": self.bucket,
+                        "Key": key,
+                        "Body": data,
+                        "ContentType": content_type,
+                        "IfMatch": version,
+                    }
+                )
+            except ClientError as exc:
+                if _error_code(exc) in ("412", "PreconditionFailed", "ConditionalRequestConflict"):
+                    return False
+                raise
         return True
 
     def iter_lines(self, relative_key: str) -> Iterator[str]:
@@ -487,6 +543,37 @@ def _error_code(exc: ClientError) -> str:
 
 
 # --------------------------------------------------------------------------- conditional-write helpers
+#: In-process locks for the conditional writes, keyed by ``(bucket, object key)``.
+#:
+#: ``If-Match``/``If-None-Match`` are evaluated by the *server*, which is what separates two Lambda
+#: processes - but it is not what separates two threads, and not every backend that speaks the S3 API
+#: evaluates those headers atomically: moto compares the ETag and then writes, with no lock in
+#: between, so two racing threads can both pass the comparison and both win (CI run 35640872774: two
+#: winners for one stale lease). So every conditional write also takes the lock for its key and
+#: re-reads the object's version inside it: exactly one writer per key gets through, whatever the
+#: backend does.
+#:
+#: The registry holds weak references, so a lock lives only as long as somebody is using it and a
+#: warm process cannot accumulate one lock per marker it has ever touched. Two threads always get the
+#: *same* lock object for a key: whoever retrieves it holds a strong reference for the whole critical
+#: section, so it cannot be collected while it is held. The critical section is one HEAD and one PUT
+#: and never re-enters the storage layer, so a plain (non-reentrant) lock cannot deadlock.
+_CONDITIONAL_LOCKS: weakref.WeakValueDictionary[tuple[str, str], threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
+_CONDITIONAL_LOCKS_GUARD = threading.Lock()
+
+
+def _conditional_lock(bucket: str, key: str) -> threading.Lock:
+    """The in-process lock that makes conditional writes to one object exclusive."""
+    with _CONDITIONAL_LOCKS_GUARD:
+        lock = _CONDITIONAL_LOCKS.get((bucket, key))
+        if lock is None:
+            lock = threading.Lock()
+            _CONDITIONAL_LOCKS[(bucket, key)] = lock
+        return lock
+
+
 def _content_version(payload: bytes) -> str:
     """Version token for the filesystem store: a hash of the bytes, like an S3 ETag."""
     return hashlib.sha256(payload).hexdigest()

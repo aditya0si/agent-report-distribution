@@ -17,7 +17,11 @@ Two writers must never both email the same agent. Three mechanisms enforce that,
 * every *update* of an existing marker is a compare-and-set on the version (ETag) that was read
   (``IfMatch`` on S3, an exclusive lock + content hash locally). Two workers that both see a stale
   lease therefore cannot both claim it: one write succeeds and the other is re-evaluated against the
-  winner's state, which is a live lease (``in_flight``);
+  winner's state, which is a live lease (``in_flight``). On the S3 path the compare-and-set is
+  enforced **inside the process** by a per-key lock plus a re-read of the stored version, and
+  **across processes** by ``If-Match`` - the offline backend (moto) compares the ETag and then writes
+  without a lock, so it cannot be the thing that decides a threaded race (see
+  :mod:`agent_reports.common.storage`);
 * each claim mints a ``lease_id``, and a terminal ``sent`` record is never rewritten. A late
   ``mark_failed`` from a worker whose send already succeeded - or whose lease was taken over - cannot
   regress the marker, so the next delivery still sees ``already_sent``.
