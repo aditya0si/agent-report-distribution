@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -254,7 +254,15 @@ class TestDispatchBatch:
         assert result.outcomes[0].status == "quarantined"
         assert zones.processed.list_keys(f"state/quarantine/dt={REPORT_DATE}/")
 
-    def test_permanent_ses_rejection_is_not_retried(self, aws: Settings, zones: Zones) -> None:
+    def test_permanent_ses_rejection_is_not_retried_but_is_dead_lettered(
+        self, aws: Settings, zones: Zones
+    ) -> None:
+        """A permanent rejection needs a human, so it must reach the DLQ rather than vanish.
+
+        The message is still returned in ``batchItemFailures``: SQS redelivers it up to
+        ``maxReceiveCount`` and then moves it to the DLQ, where RUNBOOK section 5a's redrive
+        playbook can find it. Acknowledging it would delete it with no DLQ entry.
+        """
         write_report(zones)
 
         class RejectingSes:
@@ -284,8 +292,9 @@ class TestDispatchBatch:
             emit_metrics=False,
         )
         assert result.failed == 1
-        assert result.batch_item_failures == []
+        assert result.batch_item_failures == ["msg-1"]
         assert result.outcomes[0].error_code == "PermanentError"
+        assert result.outcomes[0].retryable is False
 
     def test_throttling_is_retried_inside_the_invocation(self, aws: Settings, zones: Zones) -> None:
         write_report(zones)
@@ -408,3 +417,107 @@ class TestDispatchBatch:
             aws, records=[sqs_record(PAYLOAD, "m1")], zones=zones, ledger=ledger, emit_metrics=False
         )
         assert ledger.sent_agents(REPORT_DATE) == [AGENT]
+
+
+class TestNothingIsSilentlyDropped:
+    """The reviewer's M4/M5/M6: every path that could delete a message without an email."""
+
+    def test_a_message_whose_lease_is_still_live_is_redelivered(
+        self, aws: Settings, zones: Zones
+    ) -> None:
+        """M4: a crash after claim leaves a lease; the message must come back, not be deleted."""
+        write_report(zones)
+        ledger = DispatchLedger(zones.processed)
+        crashed = ledger.claim(REPORT_DATE, AGENT, now=NOW)  # a worker that then died
+        assert crashed.claimed is True
+
+        result = run_dispatcher(
+            aws,
+            records=[sqs_record(PAYLOAD)],
+            zones=zones,
+            ledger=ledger,
+            emit_metrics=False,
+            now=NOW + timedelta(seconds=1),  # while the crashed worker's lease is still live
+        )
+        assert result.sent == 0
+        assert result.deferred == 1
+        assert result.duplicates == 0
+        assert result.batch_item_failures == ["msg-1"]
+        assert result.outcomes[0].reason == "in_flight"
+        assert result.outcomes[0].retryable is True
+
+        # ... and once the lease expires the same message delivers the report.
+        from agent_reports.testing import sent_messages
+
+        assert sent_messages(aws.region) == []
+        retry = run_dispatcher(
+            aws,
+            records=[sqs_record(PAYLOAD, "msg-2")],
+            zones=zones,
+            ledger=ledger,
+            emit_metrics=False,
+            now=NOW + timedelta(seconds=901),
+        )
+        assert retry.sent == 1
+        assert retry.batch_item_failures == []
+        assert len(sent_messages(aws.region)) == 1
+
+    def test_ses_account_pause_is_retryable_and_reaches_the_dlq(
+        self, aws: Settings, zones: Zones
+    ) -> None:
+        """M5: ``AccountSendingPausedException`` is an account state, not a poison message."""
+        write_report(zones)
+
+        class PausedSes:
+            def send_email(self, **kwargs: Any) -> dict[str, Any]:
+                raise ClientError(
+                    {
+                        "Error": {
+                            "Code": "AccountSendingPausedException",
+                            "Message": "Email sending is paused for this account",
+                        },
+                        "ResponseMetadata": {
+                            "HTTPStatusCode": 400,
+                            "RequestId": "req-1",
+                            "HostId": "host-1",
+                            "HTTPHeaders": {},
+                            "RetryAttempts": 0,
+                        },
+                    },
+                    "SendEmail",
+                )
+
+        result = run_dispatcher(
+            aws, records=[sqs_record(PAYLOAD)], zones=zones, ses=PausedSes(), emit_metrics=False
+        )
+        assert result.failed == 1
+        assert result.outcomes[0].retryable is True
+        assert result.outcomes[0].error_code == "DependencyError"
+        assert result.batch_item_failures == ["msg-1"]
+
+        # The marker records a retryable failure, so the redelivery is allowed to send.
+        ledger = DispatchLedger(zones.processed)
+        marker = ledger.read(REPORT_DATE, AGENT)
+        assert marker is not None
+        assert marker.status == "failed"
+        assert ledger.claim(REPORT_DATE, AGENT, now=NOW + timedelta(seconds=1)).claimed is True
+
+    def test_a_corrupt_marker_is_redelivered_not_swallowed(
+        self, aws: Settings, zones: Zones
+    ) -> None:
+        """M6: an unreadable marker is a ConfigError - it must reach the DLQ, not vanish."""
+        write_report(zones)
+        ledger = DispatchLedger(zones.processed)
+        key = ledger.key_for(REPORT_DATE, AGENT)
+        zones.processed.put_bytes(key, b"{ this is not json", content_type="application/json")
+
+        result = run_dispatcher(aws, records=[sqs_record(PAYLOAD)], zones=zones, emit_metrics=False)
+        assert result.failed == 1
+        assert result.outcomes[0].error_code == "ConfigError"
+        assert result.batch_item_failures == ["msg-1"]
+        # The marker is left exactly as it was: a human has to look at it.
+        assert zones.processed.get_bytes(key) == b"{ this is not json"
+
+        from agent_reports.testing import sent_messages
+
+        assert sent_messages(aws.region) == []

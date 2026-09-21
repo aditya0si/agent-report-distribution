@@ -54,6 +54,19 @@ class TestClassify:
             assert classified.retryable is False, code
             assert isinstance(classified, errors.PermanentError)
 
+    def test_ses_account_pause_is_retryable(self) -> None:
+        """An account-level sending pause clears when somebody resumes sending.
+
+        Classifying it permanent acknowledged the message with no DLQ entry, so the delivery was
+        lost and RUNBOOK section 5a's redrive playbook had nothing to redrive.
+        """
+        classified = errors.classify(client_error("AccountSendingPausedException", status=400))
+        assert classified.retryable is True
+        assert isinstance(classified, errors.DependencyError)
+
+    def test_the_two_code_sets_do_not_overlap(self) -> None:
+        assert not (errors.RETRYABLE_CODES & errors.PERMANENT_CODES)
+
     def test_five_hundreds_retryable_even_with_unknown_code(self) -> None:
         assert errors.classify(client_error("WeirdFailure", status=503)).retryable is True
 

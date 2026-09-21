@@ -13,8 +13,15 @@ Per message:
    attribution, retrying only throttling/5xx failures;
 6. mark the marker ``sent`` with the SES message id.
 
-Failures are classified: **retryable** ones are returned in ``batchItemFailures`` so SQS redelivers
-them and finally moves them to the DLQ; **permanent** ones are recorded and acknowledged.
+Failures are classified, and **both** classes are returned in ``batchItemFailures`` so SQS redelivers
+them and finally moves them to the DLQ - an acknowledged message is deleted, so acknowledging a
+failure is how a report gets silently dropped. Retryable failures (throttling, a report that is not
+in S3 yet, SES sending paused) are expected to clear; permanent ones (an unverified recipient) need a
+human, and the DLQ is where the runbook finds them. The only message acknowledged without a send is
+an unparseable payload, and that one is quarantined to ``state/quarantine/...`` first.
+
+A message whose agent is already ``sent`` is the one safe suppression: it is acknowledged, because
+the agent already has the email.
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..common.aws import cloudwatch_client, ses_client
+from ..common.aws import ses_client
 from ..common.errors import (
     AgentReportsError,
     InvalidMessageError,
@@ -37,7 +44,7 @@ from ..common.errors import (
 from ..common.idempotency import DispatchLedger, DispatchRecord
 from ..common.keys import report_key, validate_agent_id, validate_report_date
 from ..common.logging_utils import configure_logging, get_logger, log_event
-from ..common.metrics import METRIC_NAMES, Metric, emit_emf, put_metric_data
+from ..common.metrics import METRIC_NAMES, Metric, emit_emf
 from ..common.report import AgentTotals, parse_report_totals
 from ..common.retry import RetryPolicy, call_with_retry
 from ..common.settings import Settings, load_settings
@@ -57,6 +64,7 @@ _LOG = get_logger(__name__)
 SES_SEND_POLICY = RetryPolicy(max_attempts=4, base_delay=0.05, max_delay=1.0)
 STATUS_SENT = "sent"
 STATUS_DUPLICATE = "duplicate"
+STATUS_DEFERRED = "deferred"
 STATUS_FAILED = "failed"
 STATUS_QUARANTINED = "quarantined"
 
@@ -100,6 +108,7 @@ class DispatchResult:
     processed: int = 0
     sent: int = 0
     duplicates: int = 0
+    deferred: int = 0
     failed: int = 0
     quarantined: int = 0
     batch_item_failures: list[str] = field(default_factory=list)
@@ -111,6 +120,7 @@ class DispatchResult:
             "processed": self.processed,
             "sent": self.sent,
             "duplicates": self.duplicates,
+            "deferred": self.deferred,
             "failed": self.failed,
             "quarantined": self.quarantined,
             "batch_item_failures": self.batch_item_failures,
@@ -225,8 +235,16 @@ def dispatch_one(
 
     claim = ledger.claim(report_date, agent_id, recipient=recipient, now=now)
     if not claim.claimed:
-        outcome.status = STATUS_DUPLICATE
         outcome.reason = claim.reason
+        if claim.redeliver:
+            # Another worker may still be sending (a live lease), or the marker moved under us.
+            # The message is NOT deleted: if that worker died, this message is the only thing that
+            # will ever deliver the report. SQS redelivers it and the lease is re-claimed as
+            # ``stale_lease`` once it expires.
+            outcome.status = STATUS_DEFERRED
+            outcome.retryable = True
+        else:
+            outcome.status = STATUS_DUPLICATE
         outcome.latency_ms = (time.perf_counter() - started) * 1000
         return outcome
 
@@ -319,7 +337,6 @@ def run_dispatcher(
     records: Sequence[Mapping[str, Any]],
     zones: Zones | None = None,
     ses: Any = None,
-    cloudwatch: Any = None,
     ledger: DispatchLedger | None = None,
     emit_metrics: bool = True,
     now: datetime | None = None,
@@ -388,8 +405,11 @@ def run_dispatcher(
                 report_key=report_key(str(payload["report_date"]), str(payload["agent_id"])),
             )
             result.failed += 1
-            if exc.retryable:
-                result.batch_item_failures.append(message_id)
+            # Every failed send goes back to SQS, retryable or not: an acknowledged message is
+            # deleted, so a "permanent" failure that a human can fix (an unverified recipient, a
+            # resumed SES account) would be lost with no DLQ entry to redrive. maxReceiveCount
+            # bounds the retries and the DLQ is the surface the runbook works from.
+            result.batch_item_failures.append(message_id)
             log_event(
                 _LOG,
                 "dispatch_failed",
@@ -405,6 +425,9 @@ def run_dispatcher(
             result.sent += 1
         elif outcome.status == STATUS_DUPLICATE:
             result.duplicates += 1
+        elif outcome.status == STATUS_DEFERRED:
+            result.deferred += 1
+            result.batch_item_failures.append(message_id)
         result.outcomes.append(outcome)
 
     result.duration_seconds = time.perf_counter() - started
@@ -415,6 +438,7 @@ def run_dispatcher(
         processed=result.processed,
         sent=result.sent,
         duplicates=result.duplicates,
+        deferred=result.deferred,
         failed=result.failed,
         quarantined=result.quarantined,
         batch_item_failures=len(result.batch_item_failures),
@@ -442,8 +466,6 @@ def run_dispatcher(
         if ages:
             metrics.append(Metric(METRIC_NAMES["report_age_seconds"], max(ages), unit="Seconds"))
         emit_emf(metrics, dimensions)
-        if cloudwatch is not None:
-            put_metric_data(cloudwatch, metrics, dimensions)
 
     return result
 
@@ -458,7 +480,6 @@ def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
         records=records,
         zones=open_zones(settings),
         ses=ses_client(settings),
-        cloudwatch=cloudwatch_client(settings),
     )
     return {"batchItemFailures": [{"itemIdentifier": mid} for mid in result.batch_item_failures]}
 

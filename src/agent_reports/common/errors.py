@@ -1,8 +1,16 @@
 """Error taxonomy: every failure raised by this package is classified retryable or permanent.
 
-The dispatcher (SQS-triggered) turns retryable failures into ``batchItemFailures`` so SQS redelivers
-the message and finally moves it to the DLQ; permanent failures are logged as a distinct metric and
-the message is acknowledged so a poison payload cannot loop forever.
+The dispatcher (SQS-triggered) returns failures in ``batchItemFailures`` so SQS redelivers them and
+finally moves them to the DLQ - that is true for **both** classes, because a message the dispatcher
+acknowledges is gone forever:
+
+* **retryable** failures are expected to clear on their own (throttling, transport, a report that
+  aggregation has not written yet, SES sending paused at the account level);
+* **permanent** failures need a human - a recipient identity that is not verified, an IAM change -
+  and the DLQ is where that human finds them (``docs/RUNBOOK.md`` section 5a).
+
+The only failure that is acknowledged rather than redelivered is an **unparseable payload**, and that
+one is written to ``state/quarantine/...`` first, so nothing is dropped silently.
 """
 
 from __future__ import annotations
@@ -50,6 +58,10 @@ RETRYABLE_CODES: frozenset[str] = frozenset(
         "ServerSideEncryptionConfigurationNotFoundError",
         "TransactionInProgressException",
         "EC2ThrottledException",
+        # SES account-level sending pause: the account state changes (someone resumes sending), so
+        # this is a wait-and-retry, not a reason to throw the message away. Classifying it permanent
+        # ACKed the message with no DLQ entry, which is exactly how a delivery got lost.
+        "AccountSendingPausedException",
     }
 )
 
@@ -58,7 +70,6 @@ PERMANENT_CODES: frozenset[str] = frozenset(
     {
         "AccessDenied",
         "AccessDeniedException",
-        "AccountSendingPausedException",
         "AuthorizationError",
         "InvalidParameterValue",
         "InvalidParameterValueException",
