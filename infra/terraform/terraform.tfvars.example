@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and edit. No credentials belong in this file.
+region      = "us-east-1"
+name_prefix = "agent-reports"
+environment = "dev"
+
+# Must be a verified SES identity before the dispatcher can send anything.
+ses_sender = "reports@example.com"
+
+presign_ttl_seconds = 3600
+sqs_batch_size      = 10
+dlq_max_receive_count = 3
+
+chunker_shards       = 4
+chunker_max_policies = 2000000
+
+# The paid scale path: leave false to run entirely on the free tier.
+enable_emr_module = false
+
+log_retention_days = 30
+
+# Leave empty to skip the alarm email subscription.
+alarm_email = ""
+
+report_schedule_cron      = "cron(30 2 * * ? *)"
+aggregation_schedule_cron = "cron(30 1 * * ? *)"

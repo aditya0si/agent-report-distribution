@@ -29,6 +29,7 @@ from botocore.exceptions import ClientError
 
 from . import keys
 from .errors import AgentReportsError, ConfigError
+from .keys import validate_agent_id, validate_report_date
 from .storage import Storage
 
 __all__ = [
@@ -137,11 +138,18 @@ class DispatchLedger:
 
     # ------------------------------------------------------------------ keys
     def key_for(self, report_date: str, agent_id: str) -> str:
-        return f"{self._state_prefix}/{keys.dispatch_marker_key(report_date, agent_id)}"
+        """Marker key: ``<state_prefix>/dispatch/dt=<date>/agent_id=<id>.json``.
+
+        Kept identical to :func:`agent_reports.common.keys.dispatch_marker_key` for the default
+        ``state`` prefix (asserted in ``tests/unit/test_idempotency.py``).
+        """
+        validate_report_date(report_date)
+        validate_agent_id(agent_id)
+        return f"{self._state_prefix}/dispatch/dt={report_date}/agent_id={agent_id}.json"
 
     def prefix_for(self, report_date: str) -> str:
         keys.validate_report_date(report_date)
-        return f"{self._state_prefix}/state/dispatch/dt={report_date}/"
+        return f"{self._state_prefix}/dispatch/dt={report_date}/"
 
     # ----------------------------------------------------------------- I/O
     def read(self, report_date: str, agent_id: str) -> DispatchRecord | None:

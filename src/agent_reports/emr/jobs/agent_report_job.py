@@ -26,6 +26,8 @@ Design notes:
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import sys
@@ -39,6 +41,7 @@ __all__ = [
     "build_report_frame",
     "build_spark_session",
     "finalize_report_layout",
+    "insert_agent_column",
     "main",
     "run_job",
     "write_reports",
@@ -81,6 +84,15 @@ def build_spark_session(
         # Windows/laptop hardening: the driver must advertise an address the Python worker can reach.
         config.setdefault("spark.driver.host", os.environ.get("SPARK_LOCAL_IP", "127.0.0.1"))
         config.setdefault("spark.driver.bindAddress", os.environ.get("SPARK_LOCAL_IP", "127.0.0.1"))
+        hadoop_home = os.environ.get("HADOOP_HOME")
+        if hadoop_home:
+            # Windows local FS access needs hadoop.dll on java.library.path; HADOOP_HOME/bin holds
+            # winutils.exe + hadoop.dll (see docs/RUNBOOK.md).
+            library_path = f"{hadoop_home.rstrip('/')}/bin"
+            options = f"-Djava.library.path={library_path}"
+            config.setdefault("spark.driver.extraJavaOptions", options)
+            config.setdefault("spark.executor.extraJavaOptions", options)
+            config.setdefault("spark.hadoop.hadoop.home.dir", hadoop_home)
     config.update(extra_config or {})
     for key, value in config.items():
         builder = builder.config(key, value)
@@ -220,7 +232,7 @@ def build_report_frame(details: Any) -> Any:
         F.coalesce(F.col("product"), F.lit("")).alias("product"),
         F.coalesce(F.col("policy_start"), F.lit("")).alias("policy_start"),
         F.coalesce(F.col("policy_end"), F.lit("")).alias("policy_end"),
-        premium.cast("string").alias("sum_insured_str"),
+        F.col("sum_insured").cast("string").alias("sum_insured_str"),
         premium.cast("string").alias("premium_str"),
         F.col("commission").cast("string").alias("commission_str"),
         F.lit("1").alias("policy_count_str"),
@@ -291,8 +303,11 @@ def write_reports(frame: Any, reports_uri: str, report_date: str) -> str:
     from pyspark.sql import functions as F  # noqa: PLC0415
 
     destination = f"{reports_uri.rstrip('/')}/reports/dt={report_date}"
+    # Sort by (agent_id, ...) rather than (row_type_rank, ...): the partitioned writer requires its
+    # partition column to be the leading sort key, and if the requirement is already satisfied Spark
+    # will not insert its own (non-stable) SortExec that would scramble the intra-agent row order.
     ordered = frame.repartition(F.col("agent_id")).sortWithinPartitions(
-        "row_type_rank", "policy_id"
+        "agent_id", "row_type_rank", "policy_id"
     )
     ordered.drop("row_type_rank").write.mode("overwrite").option("header", True).partitionBy(
         "agent_id"
@@ -301,26 +316,106 @@ def write_reports(frame: Any, reports_uri: str, report_date: str) -> str:
 
 
 def finalize_report_layout(spark: Any, reports_uri: str, report_date: str) -> list[str]:
-    """Rename each agent's ``part-*`` file to ``report.csv`` (S3 object copy / local rename)."""
+    """Turn Spark's partitioned output into one ``report.csv`` per agent.
+
+    Spark's partitioned writer **drops the partition column from the file content** - the value
+    lives only in the directory name. An agent report has to carry its own ``agent_id``, so the
+    driver re-inserts it and writes the final object, then removes the part file. The rewritten file
+    uses :data:`agent_reports.common.report.REPORT_COLUMNS` as the contract, which is what makes the
+    output byte-identical to the chunker's.
+    """
     destination = f"{reports_uri.rstrip('/')}/reports/dt={report_date}"
     jvm = spark.sparkContext._jvm  # noqa: SLF001 - the supported way to reach the Hadoop FS API
     path_cls = jvm.org.apache.hadoop.fs.Path
     root = path_cls(destination)
     fs = root.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
-    renamed: list[str] = []
+    if not fs.exists(root):
+        raise FileNotFoundError(f"no Spark output at {destination}")
+
+    finalized: list[str] = []
     for agent_status in fs.listStatus(root):
         if not agent_status.isDirectory():
             continue
         agent_dir = agent_status.getPath()
-        for entry in fs.listStatus(agent_dir):
-            name = entry.getPath().getName()
-            if name.startswith("part-") and name.endswith(".csv"):
-                target = path_cls(agent_dir, "report.csv")
-                if fs.rename(entry.getPath(), target):
-                    renamed.append(f"{agent_dir.getName()}/report.csv")
-                else:  # pragma: no cover - rename failures surface as missing reports downstream
-                    raise RuntimeError(f"could not rename {entry.getPath()} to {target}")
-    return sorted(renamed)
+        agent_id = agent_dir.getName().split("=", 1)[-1]
+        part_files = [
+            entry.getPath()
+            for entry in fs.listStatus(agent_dir)
+            if entry.getPath().getName().startswith("part-")
+            and entry.getPath().getName().endswith(".csv")
+        ]
+        if len(part_files) != 1:
+            raise RuntimeError(
+                f"expected exactly one part file for {agent_id}, found {len(part_files)}"
+            )
+        part_path = part_files[0]
+        text = _read_text(fs, part_path)
+        payload = insert_agent_column(text, agent_id).encode("utf-8")
+        _write_bytes(fs, path_cls(agent_dir, "report.csv"), payload)
+        fs.delete(part_path, False)
+        finalized.append(f"{agent_dir.getName()}/report.csv")
+    return sorted(finalized)
+
+
+def insert_agent_column(csv_text: str, agent_id: str) -> str:
+    """Re-insert the dropped partition column and enforce the canonical row order.
+
+    The finalizer sorts on purpose: Spark guarantees the *file* per agent, not the row order inside
+    it, so the contract (DETAIL rows sorted by ``policy_id``, then exactly one TOTAL row) is applied
+    here rather than assumed.
+    """
+    reader = csv.DictReader(io.StringIO(csv_text))
+    fieldnames = list(reader.fieldnames or [])
+    if "agent_id" in fieldnames:
+        raise ValueError("Spark output unexpectedly already contains agent_id")
+    missing = [
+        column for column in REPORT_COLUMNS if column != "agent_id" and column not in fieldnames
+    ]
+    if missing:
+        raise ValueError(f"Spark output is missing report columns: {missing}")
+
+    rows = list(reader)
+    if not rows:
+        raise ValueError(f"report for {agent_id} has no rows")
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(REPORT_COLUMNS), lineterminator="\n")
+    writer.writeheader()
+    for row in _ordered(rows, agent_id):
+        row["agent_id"] = agent_id
+        writer.writerow({column: row.get(column, "") or "" for column in REPORT_COLUMNS})
+    return buffer.getvalue()
+
+
+def _ordered(rows: list[dict[str, Any]], agent_id: str) -> list[dict[str, Any]]:
+    detail = sorted(
+        (row for row in rows if row.get("row_type") == DETAIL), key=lambda row: str(row["policy_id"])
+    )
+    totals = [row for row in rows if row.get("row_type") == TOTAL]
+    unexpected = [row for row in rows if row.get("row_type") not in (DETAIL, TOTAL)]
+    if unexpected or len(totals) != 1:
+        raise ValueError(
+            f"report for {agent_id} must hold DETAIL rows plus exactly one TOTAL row "
+            f"(found {len(detail)} detail, {len(totals)} total, {len(unexpected)} unexpected)"
+        )
+    return [*detail, *totals]
+
+
+def _read_text(fs: Any, path: Any) -> str:
+    stream = fs.open(path)
+    try:
+        payload = bytes(stream.readAllBytes())
+    finally:
+        stream.close()
+    return payload.decode("utf-8")
+
+
+def _write_bytes(fs: Any, path: Any, payload: bytes) -> None:
+    stream = fs.create(path, True)
+    try:
+        stream.write(bytearray(payload))
+    finally:
+        stream.close()
 
 
 def run_job(

@@ -13,7 +13,7 @@ than letting a Lambda die at the memory limit.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterator, Mapping
 
 from .errors import PermanentError
@@ -125,8 +125,10 @@ class RawAggregator:
                 context={"max_policies": self.max_policies, "agent_ids": len(self.agent_ids or ())},
             )
         premium = to_decimal(row.get("premium", "0"))
+        # HALF_UP (not the Decimal context default of HALF_EVEN) - commission is money, and the
+        # Spark job's round() is HALF_UP too, so the two paths must agree on exact half-paise ties.
         commission = (premium * to_decimal(row.get("commission_rate", "0"))).quantize(
-            Decimal("0.01")
+            Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         self._policies[policy_id] = PolicyRow(
             agent_id=agent_id,

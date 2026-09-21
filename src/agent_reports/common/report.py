@@ -104,9 +104,9 @@ def to_decimal(value: Any) -> Decimal:
     return Decimal(str(value)).quantize(MONEY_PLACES, rounding=ROUND_HALF_UP)
 
 
-def format_money(value: Decimal | float | int | str) -> str:
+def format_money(value: Decimal | float | int | str | None) -> str:
     """Render money with exactly two decimals (stable across platforms)."""
-    return str(Decimal(str(value)).quantize(MONEY_PLACES, rounding=ROUND_HALF_UP))
+    return str(to_decimal(value))
 
 
 def loss_ratio(claim_amount: Decimal | float | str, premium: Decimal | float | str) -> Decimal:

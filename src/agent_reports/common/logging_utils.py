@@ -56,6 +56,8 @@ _RESERVED = frozenset(
         "processName",
         "process",
         "taskName",
+        "message",
+        "asctime",
         "emf",
     }
 )
