@@ -41,7 +41,7 @@ the rows themselves (`tests/unit/test_generator.py::test_sharding_does_not_chang
 | `policy_start` / `policy_end` | date | ISO dates, 12-month term |
 | `sum_insured` | decimal(18,2) | cover in INR, a round number of lakhs |
 | `premium` | decimal(18,2) | `sum_insured × a product rate drawn uniformly from the product band` |
-| `commission_rate` | decimal(9,4) | contracted rate: 0.06 (Group Health) … 0.20 (Term Life) |
+| `commission_rate` | decimal(9,4) | contracted rate, 4dp: 0.0625 (Group Health) … 0.1825 (Term Life) |
 | `status` | string | Active, Renewed, Lapsed (70/20/10) |
 
 ### `claims` (zero or more per policy)
@@ -76,7 +76,10 @@ One object per agent per day:
 reports/dt=YYYY-MM-DD/agent_id=AGT-000123/report.csv
 ```
 
-Written by both the chunker Lambda and the PySpark job, byte for byte identically. Columns
+Written by both the chunker Lambda and the PySpark job, byte for byte identically **for
+generator-shaped input** — the four divergences that used to break that claim, and the preconditions
+that remain, are listed in
+[VERIFY.md](VERIFY.md#byte-identity-what-it-means-and-its-preconditions). Columns
 (`agent_reports.common.report.REPORT_COLUMNS`):
 
 | # | Column | DETAIL rows | TOTAL row |

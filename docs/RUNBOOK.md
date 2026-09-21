@@ -78,14 +78,17 @@ aws lambda invoke --function-name "$(terraform output -raw orchestrator_function
 ```
 
 Enable the paid scale path only when a day no longer fits the chunker guardrail
-(`AGENT_REPORTS_CHUNKER_MAX_POLICIES`, default 2,000,000 policies per shard):
+(`AGENT_REPORTS_CHUNKER_MAX_POLICIES`, default 2,000,000 policies per shard; the chunker also logs
+`emr_routing_advised` once a run passes `AGENT_REPORTS_EMR_ROW_THRESHOLD`):
 
 ```bash
 # terraform.tfvars
 enable_emr_module = true
 ```
 
-Then upload the job artifact and start a job run:
+The module creates the **application and the job role** — it does not upload artifacts or start a job
+run. Both of those are manual, and deliberately so (the job artifact is a build output, not
+infrastructure):
 
 ```bash
 aws s3 cp src/agent_reports/emr/jobs/agent_report_job.py s3://<artifacts>/artifacts/
@@ -115,7 +118,11 @@ quota is low. Two consequences:
    access in the SES console ("Request production access"); approval is usually a day or two and
    raises the quota to a documented per-second/per-day limit.
 
-The offline test path verifies synthetic `@example.com` recipients for exactly this reason.
+`scripts/e2e_local.py` verifies every roster address before the first send
+(`verify_roster_recipients`), and prints the count next to the number of emails sent. **moto does not
+enforce the sandbox rule** — a send to an unverified address succeeds offline — so the offline run is
+a rehearsal of the requirement, not a test that it is enforced. On real AWS an unverified recipient
+comes back as `MessageRejected` and the message goes to the DLQ (§5a).
 
 ## 4. Rollback
 
@@ -138,9 +145,17 @@ git revert <bad-sha> && terraform apply
 aws s3api list-object-versions --bucket <reports-bucket> --prefix 'reports/dt=2026-09-20/'
 ```
 
-Re-delivering a day is safe by design: `state/dispatch/dt=<date>/agent_id=<id>.json` is written
-before the send and marked `sent` after it, and a fresh marker is created with a conditional write
-(`IfNoneMatch: *`), so a replay cannot email anyone twice.
+Re-delivering a day is safe by design. `state/dispatch/dt=<date>/agent_id=<id>.json` is written
+before the send and marked `sent` after it, and **every** write is conditional:
+
+- a fresh marker is created with `IfNoneMatch: *` (create-if-absent);
+- every update is a compare-and-set on the version read a moment earlier (`If-Match` on S3, an
+  exclusive lock plus a content hash on the local filesystem), so two workers that both see the same
+  stale lease cannot both claim it;
+- each claim mints a `lease_id`, and a `sent` marker is terminal: a late `mark_failed` from a worker
+  whose send already succeeded returns the stored record and writes nothing.
+
+A replay therefore cannot email anyone twice, and cannot lose a delivery either — see §5d.
 
 ## 5. Failure playbooks
 
@@ -159,14 +174,19 @@ aws sqs receive_message --queue-url "$DLQ" --max-number-of-messages 10 \
   --attribute-names All --message-attribute-names All
 ```
 
-Diagnose by the `error_code` in the dispatcher log line for those messages
-(`filter @message like "dispatch_failed"` in Logs Insights, or query the structured JSON field):
+Everything that fails to send ends up here, retryable or not: the dispatcher returns **every** failed
+message in `batchItemFailures`, SQS redelivers it up to `maxReceiveCount` (3) and then moves it to
+the DLQ. The only message acknowledged without a send is an unparseable payload, and that one is
+written to `state/quarantine/...` first — so a message is never deleted silently. Diagnose by the
+`error_code` in the dispatcher log line for those messages (`filter @message like "dispatch_failed"`
+in Logs Insights, or query the structured JSON field):
 
 | `error_code` | Meaning | Fix |
 | --- | --- | --- |
 | `MissingReportError` | the report object was never written (aggregation failed or was late) | re-run the chunker/EMR job for that date, then redrive |
-| `DependencyError` / `ThrottlingError` | SES or S3 throttled us through every retry | raise the SES quota, or redrive after the throttle clears |
-| `PermanentError` with SES code `MessageRejected` | recipient or sender not verified | verify the identity, then redrive |
+| `DependencyError` / `ThrottlingError` | SES or S3 throttled us through every retry, or SES sending is paused for the account (`AccountSendingPausedException`) | raise the SES quota / resume sending, or redrive after the throttle clears |
+| `ConfigError` | the dispatch marker could not be read (corrupt JSON) | inspect `state/dispatch/dt=<date>/agent_id=<id>.json`, then delete the marker (a delete loses the record of a delivery — check the agent's inbox first) and redrive |
+| `PermanentError` with SES code `MessageRejected` | recipient or sender not verified | verify the identity (§3), then redrive |
 
 Redrive once the cause is fixed (messages keep their bodies):
 
@@ -209,9 +229,71 @@ Symptom: the `agent-reports-report-lag` alarm fires (`ReportAgeSeconds` > 6h) wh
 out. The fan-out started before aggregation finished.
 
 - Check the chunker: `shard` invocations that failed leave `agents_skipped` in their result and no
-  report objects; re-invoke the failing shard.
+  report objects; re-invoke the failing shard. A run above `AGENT_REPORTS_EMR_ROW_THRESHOLD` also
+  logs `emr_routing_advised` — that is the signal to enable the EMR module, not a failure.
 - Check the EMR path: `aws emr-serverless list-job-runs --application-id <id>`.
 - Widen the gap between `aggregation_schedule_cron` and `report_schedule_cron` (default 1 hour apart)
   if the day genuinely takes longer than that.
 - The orchestrator only targets agents that have a report object, so a late aggregation delays
   emails rather than sending broken links.
+
+### 5d. A message keeps coming back but no email arrives
+
+Symptom: `DuplicatesSuppressed` is flat while the same message reappears; the dispatcher logs
+`duplicate` with `reason=in_flight`, and `BatchItemFailures` climbs.
+
+That is the lease doing its job. The sequence:
+
+1. worker A claims `(date, agent)` and writes a `dispatching` marker with a **240 s lease**;
+2. worker A dies (timeout, OOM, a redeploy) before it sends anything;
+3. SQS redelivers the message at the 300 s visibility timeout; worker B sees a live-or-expiring lease
+   and returns the message in `batchItemFailures` (`deferred`, reason `in_flight`) instead of
+   acknowledging it — deleting it here is how a delivery used to be lost for good;
+4. once the lease is stale, the next delivery claims it as `stale_lease` (visible in the marker
+   `history`) and sends the report exactly once.
+
+The lease is deliberately **shorter than `visibility_timeout × maxReceiveCount`** (240 s vs 300 s × 3)
+so step 4 happens on the first or second redelivery instead of after the message has been
+dead-lettered; and longer than the dispatcher's own 120 s Lambda timeout so a live worker is never
+robbed of its lease. `tests/unit/test_idempotency.py` asserts both bounds, so changing the queue or
+the function timeout without revisiting the lease fails the suite.
+
+If a message is stuck in this loop for a whole day, look for a worker that is genuinely alive but
+stuck (Lambda `Duration` metric, or a report object that is enormous): the lease is doing its job and
+the problem is the worker.
+
+## 6. The presign endpoint's authorisation, and what is not wired
+
+`GET /reports?agent_id=…&date=…` has **two** gates, and which one is active is a Terraform decision:
+
+1. **the gateway** — a JWT authorizer (`aws_apigatewayv2_authorizer.presign_jwt`) exists in
+   `infra/terraform/lambda.tf` and is attached to the route as soon as `presign_jwt_issuer` is set
+   (with `presign_jwt_audience`). Point it at any OIDC issuer (Cognito, Auth0, …):
+
+   ```hcl
+   # terraform.tfvars
+   presign_jwt_issuer   = "https://cognito-idp.us-east-1.amazonaws.com/<pool-id>"
+   presign_jwt_audience = ["<app-client-id>"]
+   ```
+
+   With the **default empty issuer the route is unauthenticated at the gateway** — `GET /reports` is
+   reachable by anyone who knows the API URL. That is deliberate (the stack has to be deployable
+   without an identity provider) and it is why gate 2 exists.
+
+2. **the function** — `presign.handler` denies by default. It reads `sub` and `custom:role` from the
+   authorizer claims, allows an agent to read their own report and `reports-admin`/`ops`/`finance` to
+   read any, and returns 401 when there is no identity at all. The
+   `X-Caller-Agent-Id` / `X-Caller-Role` header fallback is **off unless
+   `AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK` is explicitly set** (this stack never sets it), so a
+   request with no claims — including one with spoofed headers — is a 401 rather than somebody else's
+   report.
+
+The practical consequence: until `presign_jwt_issuer` is set, the endpoint is safe but useless (every
+request is 401). Set the issuer before you announce the URL. Smoke-test both gates after a deploy:
+
+```bash
+API=$(terraform output -raw presign_api_endpoint)
+curl -s -o /dev/null -w '%{http_code}\n' "$API/reports?agent_id=AGT-000001&date=2026-09-20"   # expect 401
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Caller-Agent-Id: AGT-000001' \
+  "$API/reports?agent_id=AGT-000001&date=2026-09-20"                                          # expect 401 too
+```

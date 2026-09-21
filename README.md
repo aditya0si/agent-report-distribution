@@ -6,7 +6,8 @@ does not scale, and emailing a CSV attachment to thousands of agents is not acce
 the pipeline builds one CSV per agent, drops it in S3, and emails a short-lived **pre-signed link**
 instead. This repository is a clean-room rebuild of that pipeline with synthetic data: ingestion →
 per-agent aggregation → fan-out → delivery, with the paid AWS path (EMR Serverless + Spark) and a
-free-tier path (Lambda chunker) that produce byte-identical reports.
+free-tier path (Lambda chunker) that produce byte-identical reports for generator-shaped input (the
+exact preconditions are listed in [VERIFY.md](VERIFY.md#byte-identity-what-it-means-and-its-preconditions)).
 
 ## Architecture
 
@@ -74,10 +75,15 @@ flowchart LR
    to `state/quarantine/...` instead of looping.
 5. **Re-issue** — the **presign** Lambda (`GET /reports?agent_id=…&date=…`) hands an agent a fresh
    link when the emailed one has expired. Authorisation is deny-by-default: agents may read their own
-   report, `reports-admin`/`ops`/`finance` may read any.
+   report, `reports-admin`/`ops`/`finance` may read any, and a request with no identity is a 401. The
+   header-identity fallback is off unless `AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK` is explicitly
+   set (dev only — see RUNBOOK §6); the gateway-side JWT authorizer is attached as soon as
+   `presign_jwt_issuer` is set in Terraform.
 6. **Observe** — every stage emits CloudWatch EMF metrics (`EmailsSent`, `ReportsWritten`,
    `DispatchLatencyMs`, `ReportAgeSeconds`, …) plus JSON logs; Terraform wires metric filters,
-   alarms (DLQ depth, dispatcher errors, report lag) and a dashboard.
+   alarms (DLQ depth, dispatcher errors, report lag, "a fan-out ran and nothing was delivered") and a
+   dashboard. Metrics are published through **one** path (EMF) so no sum is counted twice, and the
+   alarm/dashboard dimension sets are asserted against what the code emits.
 
 ## Setup
 
@@ -100,7 +106,9 @@ Environment variables (all optional, defaults in `agent_reports.common.settings`
 `AGENT_REPORTS_PROCESSED_BUCKET`, `AGENT_REPORTS_REPORTS_BUCKET`, `AGENT_REPORTS_AGENT_QUEUE_URL`,
 `AGENT_REPORTS_DLQ_URL`, `AGENT_REPORTS_SES_SENDER`, `AGENT_REPORTS_SES_CONFIGURATION_SET`,
 `AGENT_REPORTS_PRESIGN_TTL_SECONDS`, `AGENT_REPORTS_SQS_BATCH_SIZE`, `AGENT_REPORTS_LOG_LEVEL`,
-`AGENT_REPORTS_ENDPOINT_URL` (LocalStack), `AGENT_REPORTS_LOCAL_ROOT` (filesystem-only mode).
+`AGENT_REPORTS_EMR_ROW_THRESHOLD`, `AGENT_REPORTS_ENDPOINT_URL` (LocalStack),
+`AGENT_REPORTS_LOCAL_ROOT` (filesystem-only mode), and `AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK`
+(**dev only**, never set in a deployment: it makes the presign endpoint trust spoofable headers).
 
 ## API / socket reference
 
@@ -124,11 +132,14 @@ make test          # pytest: unit + moto integration + real local Spark
 make coverage      # pytest with --cov-fail-under=85
 make tf-validate   # terraform fmt -check + init -backend=false + validate
 make e2e           # scripts/e2e_local.py: whole pipeline offline, prints a report
+make cost          # recompute docs/COST.md from live AWS prices
 ```
 
 The suite needs no AWS credentials: moto mocks S3/SQS/SES/CloudWatch and the Spark tests run a real
 `local[2]` session against the filesystem. `pytest -m "not requires_jvm"` skips the Spark tests on a
-machine without a JVM (they print a loud banner when they do skip, and CI installs Java so they run).
+machine without a JVM (they print a loud banner when they do skip, and CI installs Java so they run) —
+so the numbers above were taken **with** a JVM present, where nothing skips at all. The suite is run
+twice before publishing: a gate that passes once and flakes the next time is worse than a red one.
 
 ## Measured results
 
@@ -138,29 +149,39 @@ and the e2e output, are in [VERIFY.md](VERIFY.md).
 
 | Measurement | Result | Command |
 | --- | --- | --- |
-| Test suite | 339 passed, 0 failed, 0 skipped | `pytest tests -q` |
-| Coverage of `agent_reports` | 92% statements, 92% branches (136 of 2,396 statements missed) | `pytest tests --cov=agent_reports` |
-| Lint / format / types | ruff clean, `ruff format --check` clean, mypy 0 errors | `make lint typecheck` |
-| Terraform | `fmt -check` and `validate` clean (root module + EMR module) | `make tf-validate` |
+| Test suite | 389 passed, 0 failed, 0 skipped — **run twice consecutively**, both clean | `pytest tests -q` |
+| Coverage of `agent_reports` | 92% statements, 92% branches (151 of 2,527 statements missed) | `pytest tests --cov=agent_reports` |
+| Lint / format / types | ruff clean, `ruff format --check` clean (56 files), mypy 0 errors (50 files) | `make lint typecheck` |
+| Terraform | `fmt -check`, `init -backend=false` and `validate` clean (root module + EMR module) | `make tf-validate` |
 | Dataset generation | 52,471 rows in 0.83 s (38% headroom over the 50k target) | `agent-reports generate --rows 50000` |
-| Offline e2e | 5,000-row day: 381 agents, 381 reports, 381 emails, queue drained, pre-signed link verified byte-for-byte | `make e2e` |
-| Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, queue drained, link verified, 1,940 s wall on a busy host (960 s on a quiet one — moto-bound either way) | `python scripts/e2e_local.py --rows 50000 --shards 4` |
-| Spark vs chunker | byte-identical reports for all 40 agents, `local[2]`, real shuffle | `pytest tests/integration/test_spark_job.py` |
-| Spark job runtime | the 5-test Spark module runs in 25-60 s including JVM + session start (`5 passed in 60.35s` on the last run; JVM startup dominates and varies) | `pytest tests/integration/test_spark_job.py -q` |
+| Offline e2e | 5,000-row day: 381 agents, 381 reports, 381 emails, **381 recipients verified**, queue drained, pre-signed link verified byte-for-byte | `make e2e` |
+| Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, queue drained, link verified | `python scripts/e2e_local.py --rows 50000 --shards 4` |
+| Spark vs chunker | byte-identical reports for all 40 agents on the generated day **and** on an adversarial day (sub-paise rates, a replayed partition, a foreign-agent claim, a policy with no roster row) | `pytest tests/integration/test_spark_job.py` |
+| Spark job runtime | the 6-test Spark module runs in 90-91 s including JVM + session start (JVM startup dominates and varies) | `pytest tests/integration/test_spark_job.py -q` |
+| Cost model | ~$27.05/month for the free-tier path, ~$29.32 with the EMR path, recomputed from live AWS prices | `python scripts/cost_model.py` |
 
-Exact commands, raw output and the honest gap list are in [VERIFY.md](VERIFY.md).
+Exact commands, raw output and the honest gap list are in [VERIFY.md](VERIFY.md); the cost model and
+its sources are in [docs/COST.md](docs/COST.md).
 
 ## Limitations and what is not built yet
 
 - **SES is in the sandbox until production access is granted.** Both the sender and every recipient
-  must be verified; the offline run verifies the synthetic `@example.com` agents for this reason.
-- **The EMR path is deployed but not executed on AWS.** `terraform validate` and the local Spark run
-  are real; an actual EMR Serverless job run needs an AWS account and was not performed here.
-- **The `presign` HTTP API has no authorizer wired to a real identity provider.** The function reads
-  JWT claims if present and denies by default, but a JWT authorizer (Cognito or equivalent) still has
-  to be attached in Terraform for production use.
+  must be verified; the offline run verifies every roster address for this reason. **moto does not
+  enforce that rule** — an offline send to an unverified recipient succeeds — so the offline path is a
+  rehearsal, not a proof (VERIFY.md says exactly what it does and does not show).
+- **The EMR path creates infrastructure, not a running job.** `enable_emr_module = true` creates the
+  Serverless application and the job role; uploading `agent_report_job.py` + `agent_reports.zip` and
+  starting a job run are manual (RUNBOOK §2). The PySpark job itself is real and runs locally on a
+  JVM in the test suite, but **no EMR job was executed on AWS**.
+- **The `presign` HTTP API has no authorizer attached by default.** The Terraform contains a real JWT
+  authorizer, and the route uses it as soon as `presign_jwt_issuer` is set — but with the default
+  empty issuer the route is unauthenticated at the gateway and the Lambda is the only gate. The
+  function denies by default (no claims → 401; the spoofable header fallback is off), so the endpoint
+  is safe-but-unusable until an issuer is configured. RUNBOOK §6 is the procedure.
 - **No attachment path.** Delivery is link-only by design; agents without web access are out of scope.
-- **CloudWatch dashboards/alarms are created but never fired here.** Alarm thresholds are reasoned,
+- **CloudWatch dashboards/alarms are created but never fired here.** Their metric identities and
+  dimension sets are asserted against what the code publishes (`tests/unit/test_terraform_config.py`),
+  which is stronger than "the alarm exists" but still not a real page. Alarm thresholds are reasoned,
   not battle-tested against real traffic.
 - **Single-region, no cross-region replication, no PITR.** The lifecycle policies are the only data
   protection beyond versioning.
@@ -168,6 +189,10 @@ Exact commands, raw output and the honest gap list are in [VERIFY.md](VERIFY.md)
   incidence are plausible, not calibrated.
 - **`agent_reports.lambda_handlers` is the package name** (`lambda` is a Python keyword); the deployed
   function names keep the `-orchestrator` / `-dispatcher` / `-presign` / `-chunker` convention.
+- **Byte-identity between the two aggregation paths holds for generator-shaped input.** The remaining
+  preconditions are listed in
+  [VERIFY.md](VERIFY.md#byte-identity-what-it-means-and-its-preconditions) — read them before treating
+  the chunker as a drop-in for the Spark job on data this repo did not generate.
 
 ## License
 

@@ -35,7 +35,7 @@ $ .venv/Scripts/python.exe -m ruff check .
 All checks passed!
 
 $ .venv/Scripts/python.exe -m ruff format --check .
-54 files already formatted
+56 files already formatted
 ```
 
 (`make lint` runs exactly these two commands. `ruff check` started at 88 findings; all were fixed in
@@ -47,7 +47,7 @@ ignored.)
 
 ```console
 $ .venv/Scripts/python.exe -m mypy
-Success: no issues found in 48 source files
+Success: no issues found in 50 source files
 ```
 
 `mypy` runs over `src`, `scripts` **and** `tests` (`files = ["src", "scripts", "tests"]` in
@@ -60,11 +60,12 @@ neither ships stubs, and both are listed explicitly in `pyproject.toml`.
 
 ```console
 $ .venv/Scripts/python.exe -m pytest tests -q --cov=agent_reports --cov-report=term-missing
-........................................................................ [ 21%]
-........................................................................ [ 42%]
-........................................................................ [ 63%]
-........................................................................ [ 84%]
-...................................................                      [100%]
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 55%]
+........................................................................ [ 74%]
+........................................................................ [ 92%]
+.............................                                            [100%]
 =============================== tests coverage ================================
 ______________ coverage: platform win32, python 3.11.16-final-0 _______________
 
@@ -72,43 +73,49 @@ Name                                                   Stmts   Miss Branch BrPar
 --------------------------------------------------------------------------------------------------
 src\agent_reports\__init__.py                              2      0      0      0   100%
 src\agent_reports\common\__init__.py                      10      0      0      0   100%
-src\agent_reports\common\aggregation.py                  102      1     18      0    99%   191
-src\agent_reports\common\aws.py                           31      1      2      0    97%   96
-src\agent_reports\common\errors.py                        74      5     22      3    90%   218, 225, 234-236
-src\agent_reports\common\idempotency.py                  162     13     38      5    90%   106, 108, 169, 271, 313-318, 349-351
+src\agent_reports\common\aggregation.py                  101      1     18      0    99%   200
+src\agent_reports\common\aws.py                           31      2      2      0    94%   92, 96
+src\agent_reports\common\errors.py                        74      5     22      3    90%   229, 236, 245-247
+src\agent_reports\common\idempotency.py                  195     20     60     13    86%   126, 128, 206, 272-275, 300, 315->290, 318, 344, 364->341, 367, 394-399, 420, 422, 449-451
 src\agent_reports\common\keys.py                         115      4     38      4    95%   106, 116, 198, 201
 src\agent_reports\common\logging_utils.py                 74      1     18      1    98%   86
-src\agent_reports\common\metrics.py                       50      1     18      1    97%   140
-src\agent_reports\common\report.py                        74      0     18      0   100%
+src\agent_reports\common\metrics.py                       50      1     18      1    97%   145
+src\agent_reports\common\report.py                        79      0     20      0   100%
 src\agent_reports\common\retry.py                         75      0     24      1    99%   103->131
 src\agent_reports\common\roster.py                        82     21     38      9    68%   27, 32->30, 41-42, 46, 66, 78->77, 90->88, 102, 104, 115-127, 131-135
-src\agent_reports\common\settings.py                     109     12     42      3    86%   104, 108, 135, 138, 188-198
-src\agent_reports\common\storage.py                      191     27     54     12    82%   85, 87, 91, 94-98, 100, 113->117, 200, 208, 231, 240->242, 265, 270, 329, 342, 345, 348, 351-354, 359, 369, 374, 387-389
+src\agent_reports\common\settings.py                     110      6     42      4    93%   110, 114, 141, 144, 200-204
+src\agent_reports\common\storage.py                      253     35     68     17    83%   98, 100, 104, 107-111, 113, 126->130, 205, 235, 257, 265, 288, 297->299, 322, 327, 424, 437, 440, 443, 446-449, 454, 466, 471, 484-486, 521, 524-525, 527-528, 530
 src\agent_reports\emr\__init__.py                          2      0      0      0   100%
 src\agent_reports\emr\jobs\__init__.py                     2      0      0      0   100%
-src\agent_reports\emr\jobs\agent_report_job.py           179     16     28      4    90%   111->113, 376, 391, 499->502, 518-528, 532-545
+src\agent_reports\emr\jobs\agent_report_job.py           179     16     28      4    90%   111->113, 397, 412, 520->523, 539-549, 553-566
 src\agent_reports\ingest\__init__.py                       4      0      0      0   100%
 src\agent_reports\ingest\cli.py                           39      0      4      0   100%
 src\agent_reports\ingest\generator.py                    206      8     46      1    96%   99, 281-286, 304
 src\agent_reports\ingest\schema.py                        31      0      0      0   100%
 src\agent_reports\lambda_handlers\__init__.py              2      0      0      0   100%
-src\agent_reports\lambda_handlers\chunker.py              80     11     16      2    86%   89, 148->158, 163-183
-src\agent_reports\lambda_handlers\dispatcher.py          201      2     36      1    99%   82, 110, 406->408
+src\agent_reports\lambda_handlers\chunker.py              82     11     16      1    88%   90, 177-196
+src\agent_reports\lambda_handlers\dispatcher.py          206      2     36      1    99%   90, 119, 428->431
 src\agent_reports\lambda_handlers\email_templates.py      34      0     10      0   100%
-src\agent_reports\lambda_handlers\orchestrator.py        115      1     22      2    98%   223, 267->277
-src\agent_reports\lambda_handlers\presign.py              72      0     10      0   100%
-src\agent_reports\pipeline.py                            213      4     56      9    95%   193, 248->exit, 352->379, 377, 385->392, 388, 401->405, 412->410, 414
-src\agent_reports\testing.py                              65      8     14      4    82%   34, 38, 80-82, 113, 118, 124
+src\agent_reports\lambda_handlers\orchestrator.py        113      1     20      1    98%   222
+src\agent_reports\lambda_handlers\presign.py              74      0     12      0   100%
+src\agent_reports\pipeline.py                            226      8     64     11    93%   195, 256->255, 260->exit, 363-366, 371->397, 395, 403->410, 406, 420->424, 431->429, 433
+src\agent_reports\testing.py                              76      9     18      5    83%   35, 39, 81-83, 117, 137, 142, 148
 --------------------------------------------------------------------------------------------------
-TOTAL                                                   2396    136    572     62    92%
-339 passed in 429.70s (0:07:09)
+TOTAL                                                   2527    151    622     77    92%
+389 passed in 508.44s (0:08:28)
 ```
 
-**339 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 339 (they are marked
+**389 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 389 (they are marked
 `requires_jvm` but a JVM is present, so they ran — the suite would have printed a loud banner and
-reported them as skipped otherwise). The earlier runs recorded in this file said 333 and 316; the six
-added since are the four `session_config` tests and the two ledger/atomicity tests from the hardening
-pass described below.
+reported them as skipped otherwise). The earlier runs recorded in this file said 316, 333 and 339; the
+49 added since are the review-response tests (authz spoofing, commission precision, the ledger's
+compare-and-set races, the silent-drop paths, the metric-identity/Terraform checks, the adversarial
+Spark comparison and the EMR-threshold test).
+
+The suite was then run **twice, consecutively, on this tree** (`pytest tests -q` both times, no
+deselection, no `-p no:randomly`): `389 passed in 508.44s` and `389 passed in 339.95s`. Two clean
+runs matter more than one: a gate that passes once and flakes the next time is worse than a red one,
+and the Spark module is the part most likely to flake.
 
 Real assertion counts by area, from the same run:
 
@@ -116,21 +123,21 @@ Real assertion counts by area, from the same run:
 | --- | --- |
 | `tests/unit/test_keys.py` | raw/report/state key builders and parsers, path-traversal rejection |
 | `tests/unit/test_settings.py` | env parsing, validation bounds, local-mode zone URIs |
-| `tests/unit/test_errors_retry.py` | error classification by AWS code/HTTP status, backoff ceilings, jitter bounds, retry/give-up behaviour |
+| `tests/unit/test_errors_retry.py` | error classification by AWS code/HTTP status (including SES's account-level sending pause), backoff ceilings, jitter bounds, retry/give-up behaviour |
 | `tests/unit/test_report_shaping.py` | money formatting, totals maths, CSV render/parse round trip |
-| `tests/unit/test_generator.py` | determinism (byte-identical), sharding invariance, schema, referential integrity, Parquet round trip, CLI |
-| `tests/unit/test_aggregation.py` | per-policy roll-up, HALF_UP commission on exact ties, orphan claims, capacity guardrail |
-| `tests/unit/test_idempotency.py` | lease semantics, duplicate suppression, stale-lease retry, conditional-create race (two threads), S3 marker round trip |
+| `tests/unit/test_generator.py` | determinism (byte-identical), sharding invariance, schema, referential integrity, Parquet round trip, CLI, sub-paise commission rates |
+| `tests/unit/test_aggregation.py` | per-policy roll-up, HALF_UP commission on exact ties, 4dp rate precision, claim attribution by policy, orphan claims, capacity guardrail |
+| `tests/unit/test_idempotency.py` | lease semantics, duplicate suppression, stale-lease retry, compare-and-set races (local and S3), the terminal-`sent` guarantee, S3 marker round trip |
 | `tests/unit/test_logging_metrics.py` | JSON log contract, EMF document shape, EMF bypass of the JSON formatter, `PutMetricData` |
 | `tests/unit/test_email_templates.py` | personalisation, HTML escaping, subject, expiry wording, missing-key failure |
-| `tests/unit/test_presign.py` | authz allow/deny matrix, 400/401/403/404, TTL, and a pre-signed URL that really resolves |
+| `tests/unit/test_presign.py` | authz allow/deny matrix, 400/401/403/404, TTL, spoofed-header rejection by default, the dev-only fallback switch, and a pre-signed URL that really resolves |
 | `tests/unit/test_orchestrator.py` | fan-out planning, partial batch failure + individual retry, manifest contents |
-| `tests/unit/test_dispatcher.py` | payload validation, quarantine, duplicate suppression, SES throttle retry, permanent rejection, mixed batch partitioning, oversized report fallback |
+| `tests/unit/test_dispatcher.py` | payload validation, quarantine, duplicate suppression, SES throttle retry, permanent rejection, mixed batch partitioning, oversized report fallback, and the three silent-drop paths (live lease, account pause, corrupt marker) |
+| `tests/unit/test_pipeline.py` | dispatch batch budgeting, SQS→event record shaping, queue depth, date validation, EMR routing threshold |
 | `tests/unit/test_spark_shaping.py` | partition-column re-insertion, row ordering, malformed Spark output rejection |
-| `tests/unit/test_pipeline.py` | dispatch batch budgeting, SQS→event record shaping, queue depth, date validation |
-| `tests/unit/test_terraform_config.py` | lifecycle policies, redrive, IAM least privilege (no `*` actions), alarms, metric filters, schedules, EMR module |
-| `tests/integration/test_pipeline_end_to_end.py` | full moto run, independent recomputation of one agent's totals, replay idempotency, quarantine, poison → DLQ → redrive |
-| `tests/integration/test_spark_job.py` | real `local[2]` Spark run, output layout, totals vs raw partitions, **byte-identical to the chunker** |
+| `tests/unit/test_terraform_config.py` | lifecycle policies, redrive, IAM least privilege (no `*` actions), alarms, metric filters, schedules, EMR module, and every alarm/dashboard metric identity checked against what the handlers publish |
+| `tests/integration/test_pipeline_end_to_end.py` | full moto run, independent recomputation of one agent's totals, published metric identities, recipient verification, replay idempotency, quarantine, poison → DLQ → redrive |
+| `tests/integration/test_spark_job.py` | real `local[2]` Spark run, output layout, totals vs raw partitions, **byte-identical to the chunker** on generated *and* adversarial input |
 
 ## Gate 4 — production build of every app
 
@@ -142,11 +149,12 @@ $ .venv/Scripts/python.exe -c "import agent_reports, agent_reports.pipeline; pri
 1.0.0
 
 $ .venv/Scripts/python.exe -m pytest tests/integration/test_spark_job.py -q
-5 passed in 60.35s
+6 passed in 90.97s (0:01:30)
 ```
 
 (JVM startup dominates this module and varies run to run: 24.6 s on the run recorded earlier in this
-file's history, 60.4 s on the final re-run. The tests themselves are the same five.)
+file's history, 60.4 s on a later one, 91.0 s on the final tree — which now has six tests, not five:
+the sixth is the adversarial chunker/Spark comparison. The tests themselves are unchanged in intent.)
 
 The Lambda deployment package is produced by Terraform's `archive_file` data source
 (`infra/terraform/main.tf`), which zips `src/` — the same tree that is imported and exercised by every
@@ -163,17 +171,31 @@ agents discovered   : 381
 agents processed    : 381
 reports written     : 381
 emails sent         : 381 (SES captured 381)
+recipients verified : 381 (every roster address; moto does NOT enforce the SES sandbox rule - see VERIFY.md)
 duplicates / failed : 0 / 0
 queue drained       : yes
 dlq depth           : 0
 objects written     : 776
 metrics emitted     : 42 EMF documents (ReportsWritten, RowsIn, AgentsDiscovered, MessagesEnqueued, BatchItemFailures, EmailsSent, EmailsFailed, DuplicatesSuppressed, DispatchLatencyMs, ReportAgeSeconds)
-cloudwatch metrics  : 10 published (AgentsDiscovered, BatchItemFailures, DispatchLatencyMs, DuplicatesSuppressed, EmailsFailed, EmailsSent, MessagesEnqueued, ReportAgeSeconds, ReportsWritten, RowsIn)
+metric identities   : 12 namespace/name/dimension sets
+                      AgentReports/AgentsDiscovered{Service=chunker}
+                      AgentReports/AgentsDiscovered{Service=orchestrator}
+                      AgentReports/BatchItemFailures{Service=dispatcher}
+                      AgentReports/BatchItemFailures{Service=orchestrator}
+                      AgentReports/DispatchLatencyMs{Service=dispatcher}
+                      AgentReports/DuplicatesSuppressed{Service=dispatcher}
+                      AgentReports/EmailsFailed{Service=dispatcher}
+                      AgentReports/EmailsSent{Service=dispatcher}
+                      AgentReports/MessagesEnqueued{Service=orchestrator}
+                      AgentReports/ReportAgeSeconds{Service=dispatcher}
+                      AgentReports/ReportsWritten{Service=chunker}
+                      AgentReports/RowsIn{Service=chunker}
+cloudwatch api probe: 1 datapoint(s) written, 1 metric(s) read back from AgentReportsSelfTest
 pre-signed link     : HTTP 200, 1,421 bytes, matches report object: True
 sample report       : reports/dt=2026-09-20/agent_id=AGT-000001/report.csv
 manifest            : s3://agent-reports-processed/state/runs/dt=2026-09-20/manifest.json
-stage timings (s)   : generate=0.090, aggregate=1.163, fanout=4.213, dispatch=35.293
-duration            : 41.825 s (wall 42.878 s)
+stage timings (s)   : generate=0.098, aggregate=1.018, fanout=3.855, before_dispatch=1.085, dispatch=37.393
+duration            : 44.520 s (wall 46.372 s)
 
 E2E OK
 ```
@@ -270,16 +292,56 @@ Success! The configuration is valid.
 
 ### Spark job, executed for real
 
-Part of the 339-test run, but worth calling out because it is the EMR deliverable:
+Part of the 389-test run, but worth calling out because it is the EMR deliverable:
 
 - `tests/integration/test_spark_job.py` starts a real `SparkSession` on `local[2]`, reads the CSV
   partitions, runs the shuffle, writes `partitionBy("agent_id")`, and finalises each agent's
   `report.csv` through the Hadoop FileSystem API;
 - the reports it produces are asserted **byte-identical** to the free-tier chunker's for all 40
-  agents in the fixture dataset;
+  agents in the fixture dataset, and for every agent in the adversarial fixture (see below);
 - this cross-check found three real bugs during development (`sum_insured` written as a copy of
   `premium`; commission rounding HALF_EVEN vs HALF_UP; Spark's partitioned writer scrambling the
-  intra-agent row order), which is exactly what it is for.
+  intra-agent row order), and four more during the review response (the rate precision and the three
+  data-shape divergences), which is exactly what it is for.
+
+### Byte identity: what it means, and its preconditions
+
+`tests/integration/test_spark_job.py` asserts that the free-tier chunker and the PySpark job produce
+**byte-identical** report objects for the same input. Two tests do it:
+
+- `test_spark_output_is_byte_identical_to_the_chunker` — the generated 40-agent day, every agent;
+- `test_spark_and_chunker_agree_on_adversarial_input` — a hand-written day built to break the claim:
+  4dp rates (0.0750), a 5dp rate (0.07505), a claim whose `agent_id` is not its policy's owner, a
+  policy whose agent has **no roster row**, and a policy row **duplicated across two partitions** (an
+  at-least-once replay). All four used to diverge; the assertions are on the bytes *and* on the money
+  (`99999.99 × 0.0750 = 7500.00`, not `8000.00`).
+
+The four divergences that were fixed to get there:
+
+| Divergence | Before | After |
+| --- | --- | --- |
+| Commission rate was quantised to 2dp **before** multiplying | `99999.99 × 0.0750` → `8000.00` on the chunker, `7500.00` on Spark | the rate is parsed at 4dp (`to_rate_decimal`) and only the product is rounded, HALF_UP, once |
+| A claim whose `agent_id` differs from its policy's owner | dropped by the chunker when that agent was out of shard, counted by Spark | both attribute a claim to the policy it points at (`policy_id` is the join) |
+| A policy whose agent has no roster row | no report on the chunker, an extra report object on Spark | Spark joins the roster **inner**, so neither path reports it |
+| A duplicated policy row (replayed partition) | counted once by the chunker, twice by Spark | Spark de-duplicates on `policy_id`, like the chunker |
+
+**Preconditions that remain** (byte-identity is a property of *this* data shape, not of any data):
+
+1. **Duplicate *claim* rows are counted twice by both paths.** Policy and agent rows are de-duplicated
+   by primary key on both sides, but the chunker cannot keep a set of seen `claim_id`s without giving
+   up its memory bound (it is bounded by policies, not rows), so a replayed *claims* partition doubles
+   the claim totals on both paths. The outputs still match; the numbers are wrong the same way on both.
+2. **A duplicated policy row with *different* content is not resolved identically.** The chunker keeps
+   the first copy it reads; Spark keeps an arbitrary one of the copies. Replayed files (identical
+   copies) are safe; a partition that was edited in place is not.
+3. **Money must fit the Spark decimal types**: `premium`/`sum_insured` in `Decimal(18, 2)` and
+   `commission_rate` in `Decimal(9, 4)`. Values outside those ranges are a Spark-side null or rounding
+   the Python path does not reproduce.
+4. **The claim/agent/policy joins assume the generated key shapes** (`POL-\d{10}`, `AGT-\d{6}`): both
+   paths sort and join on the string form, so a key that sorts differently as a string than as a
+   number (e.g. `POL-1` vs `POL-0000000001`) would order DETAIL rows differently.
+5. **The cross-check runs on two datasets** (the generated 40-agent day and the adversarial fixture).
+   Everything in the "fixed" table above is covered; arbitrary hand-made data is not.
 
 ### Bugs found by running things, not by reading them
 
@@ -302,31 +364,86 @@ Recorded because they are the honest measure of whether the tests do anything:
 | the local-master Spark patience windows were `setdefault`-ed onto keys the cluster defaults had already set, so they were silent no-ops (the comment promised 600 s, the config kept 120 s) | writing the `session_config` unit tests for the hardening pass | assigned instead of `setdefault`-ed, with the reason in a comment |
 | splitting `build_spark_session` into `session_config` + `build_session` left the old name in `__all__`, in `main()` and in `tests/conftest.py` — the module no longer imported cleanly | `ruff check` (F822/F821) and `mypy` (`name-defined`, `attr-defined`), i.e. the gates caught it before the test suite did | call sites and the RUNBOOK reference updated; the refactor is now covered by four JVM-free tests |
 
-## Hardening pass (the final tree)
+Bugs found by the adversarial review of commit `9604141`, and fixed here (each one has a test that
+failed before the fix and passes after it):
 
-After the gates above had already passed, a last review pass changed four things and every gate was
-re-run on the result. This section exists so the transcripts above can be attributed to the tree that
-is committed:
+| Bug | How it was proved | Fix |
+| --- | --- | --- |
+| **Authorisation bypass**: `presign` trusted caller-supplied `X-Caller-Agent-Id`/`X-Caller-Role` headers, and the deployed route had no authorizer, so `{'X-Caller-Agent-Id':'AGT-000009','X-Caller-Role':'reports-admin'}` returned another agent's `report_key` with HTTP 200 | `TestHeaderSpoofingIsOffByDefault` in `tests/unit/test_presign.py` | the header fallback is gated behind `AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK` (default off) and a real JWT authorizer was added to the Terraform route |
+| **Money**: the chunker quantised `commission_rate` to 2dp *before* multiplying, so `99999.99 × 0.0750` was `8000.00` against Spark's `7500.00` — and the delta flowed into the TOTAL row and the emailed figure | `TestCommissionPrecision` in `tests/unit/test_aggregation.py`, plus the adversarial Spark/chunker byte comparison | `to_rate_decimal` (4dp, matching `DecimalType(9,4)`) and a single HALF_UP rounding of the product |
+| **Idempotency race**: marker updates were unconditional, so two workers could both claim the same stale lease (both email), and a late `mark_failed` could regress a `sent` marker (so the next delivery emailed again) | `TestStaleLeaseRace` and `TestTerminalSentIsNeverRegressed` in `tests/unit/test_idempotency.py` | every marker update is a compare-and-set (`If-Match` on S3, an exclusive lock + content hash locally), each claim mints a `lease_id`, and `sent` is terminal |
+| **Silent non-delivery**: a message whose lease was still live was reported `duplicate`/`in_flight` with **no** `batchItemFailure`, so SQS deleted it and the agent was never emailed | `TestNothingIsSilentlyDropped::test_a_message_whose_lease_is_still_live_is_redelivered` | `in_flight` is now `deferred` and returned in `batchItemFailures`; the lease (240 s) is shorter than the SQS retry window (300 s × 3) so the retry actually happens |
+| **Silent non-delivery**: `AccountSendingPausedException` was classified permanent, so the message was acknowledged with no DLQ entry and the runbook's redrive playbook had nothing to redrive | `test_ses_account_pause_is_retryable_and_reaches_the_dlq` | the code is retryable (an account-level pause clears); every failed send now goes to the DLQ, retryable or not |
+| **Silent non-delivery**: a corrupt dispatch marker raised `ConfigError` (permanent) and the message was deleted | `test_a_corrupt_marker_is_redelivered_not_swallowed` | permanent failures are DLQ-routed too; only an unparseable *payload* is acknowledged, and that one is quarantined to S3 first |
+| **Alarms that could never fire**: `emails_not_sent` alarmed on `MessagesEnqueued > 0` (true on every successful day) and referenced a dimension set nobody published; `dispatcher_errors` watched a metric filter that published no dimensions; 4 of the dashboard's 8 references used unpublished dimension sets | the identity checks in `tests/unit/test_terraform_config.py` | the alarm is metric math over the two metrics the handlers actually publish, the metric filters now declare their `dimensions`, and the per-day `ReportDate` dimension was dropped |
+| **Metrics counted twice**: every metric was published as EMF *and* through `PutMetricData` under the same namespace/name/dimensions, doubling every `Sum` | `test_no_log_metric_filter_republishes_an_emf_identity` and the identity set asserted in `test_published_metric_identities_are_the_operational_ones` | EMF is the single publish path; `PutMetricData` remains for out-of-AWS callers and is exercised by its own test |
+| **A false claim**: VERIFY.md said moto enforces the SES "recipient must be verified" rule; it does not (a send to an unverified address succeeds offline, and the 5k e2e verified 200 recipients while emailing 381) | `test_the_offline_path_verifies_every_recipient_it_targets` | the claim is corrected below, and the offline run now verifies every roster address before the first send |
+| **Cost model wrong in four places** (free-tier column described the superseded pre-2025-07-15 tier; CloudWatch undercounted ~19×; S3 request counts ignored the dispatcher's per-email calls; tiering 1.4 KB reports to Standard-IA *increased* the bill) | `scripts/cost_model.py`, which recomputes every line from sourced prices | docs/COST.md rewritten from the script; the reports/state lifecycle transitions removed |
+| **An IAM statement that granted nothing**: the EMR job role's log ARN omitted the `log-group:` segment | `test_the_log_permission_grants_something` | the ARN is `arn:aws:logs:*:*:log-group:/aws/emr-serverless*:*` |
+| **Dead configuration**: `AGENT_REPORTS_EMR_ROW_THRESHOLD` was documented as the free-tier-vs-scale routing threshold but never read | `TestEmrRoutingThreshold` in `tests/unit/test_pipeline.py` | the chunker reads it and logs `emr_routing_advised` (with the numbers) when a run passes it |
+| **A Terraform suite that could silently vanish**: `tests/unit/test_terraform_config.py` opened with `pytest.importorskip("hcl2")`, so a missing dev dependency turned all 43 Terraform assertions into skips | the module now imports `hcl2` loudly and `python-hcl2` is in `requirements-dev.txt` (CI installs it) | loud import |
+| **A comment that described a policy that does not exist**: `sqs.tf` claimed the queue policy implemented a read/write split between the two roles (the IAM policies do that, not the queue policy) | reading it against `iam.tf` | the comment now says what the policy actually enforces |
+| **README overstated the EMR deployment**: the module creates the application + role; uploading artifacts and starting a job run are manual | RUNBOOK §2 | README corrected |
 
-1. **`LocalStorage` create-if-absent is now atomic against readers, not just writers.**
-   `O_CREAT|O_EXCL` publishes the filename before the bytes exist, so a racing reader could observe a
-   zero-byte dispatch marker. The content is now written to a private temp file and hard-linked into
-   place (`os.link` is atomic and fails if the target exists), with an `O_EXCL` fallback for
-   filesystems without hard links. `test_create_if_absent_never_publishes_a_partial_file` pins it,
-   including that no temp file is left behind.
-2. **An unparseable dispatch marker is a `ConfigError`, not a bare `JSONDecodeError`.** The ledger's
-   `DispatchRecord.from_json` now raises the taxonomy's config error with the marker size and prefix in
-   context, so a corrupt marker in `state/` is reported as an operational problem instead of a stack
-   trace three frames down. Pinned by `test_marker_that_is_not_json_is_reported_as_a_config_error`.
-3. **The Spark session builder was split into `session_config` (pure) + `build_session` (needs a JVM)**
-   so the configuration is testable without Spark. That split exposed the `setdefault` no-op recorded
-   in the bug table above, and it is covered by four new JVM-free tests in
-   `tests/unit/test_spark_shaping.py`.
-4. **Docs** (`docs/RUNBOOK.md`) updated for the rename.
 
-The gates were then re-run on this tree: ruff + `ruff format --check` clean (55 files), mypy 0 errors
-(49 files), **339 tests passed, 92% coverage**, the Spark module 5 passed, the 5,000-row e2e `E2E OK`
-above, the 50,000-row e2e `E2E OK` below, `terraform fmt -check`/`validate` clean, secret grep empty.
+## Review response (the final tree)
+
+After the gates above had already passed, an independent adversarial review of commit `9604141`
+confirmed the engineering (339 tests re-derived exactly, coverage diffs empty, ruff/mypy/terraform
+clean, IAM least-privilege, a genuine PySpark job, working partial-batch/DLQ/retry behaviour, no
+stubs) and found sixteen defects. All sixteen are closed above; the earlier hardening pass it also
+inherited is summarised here so the transcripts can be attributed to the tree that is committed:
+
+1. **`LocalStorage` create-if-absent is atomic against readers, not just writers.** `O_CREAT|O_EXCL`
+   publishes the filename before the bytes exist, so a racing reader could observe a zero-byte
+   dispatch marker. The content is written to a private temp file and hard-linked into place
+   (`os.link` is atomic and fails if the target exists), with an `O_EXCL` fallback for filesystems
+   without hard links. `test_create_if_absent_never_publishes_a_partial_file` pins it.
+2. **An unparseable dispatch marker is a `ConfigError`, not a bare `JSONDecodeError`**, with the
+   marker size and prefix in context.
+3. **The Spark session builder was split into `session_config` (pure) + `build_session` (needs a
+   JVM)**, covered by four JVM-free tests in `tests/unit/test_spark_shaping.py`.
+4. **The review response itself**, which changed: the presign identity path (fail closed + a real JWT
+   authorizer in Terraform), the commission-rate precision and three more chunker/Spark divergences,
+   the ledger's compare-and-set writes and lease tokens, the dispatcher's failure routing
+   (`deferred`/DLQ for everything that did not send), the error taxonomy (`AccountSendingPaused`),
+   the metric publish path (EMF only) and the metric identities the alarms and dashboard read, the
+   S3 lifecycle (no tiering below the 128 KB minimum), the EMR log ARN, the EMR row threshold, the
+   `hcl2` import, and four documents (README, RUNBOOK, VERIFY, COST).
+
+Every gate below was then run **twice, consecutively, on this tree**, with the JVM present so the six
+Spark tests ran rather than skipped: ruff clean, `ruff format --check` clean (56 files), mypy 0 errors
+(50 source files), **389 tests passed, 0 failed, 0 skipped** in both runs, the 5,000-row e2e `E2E OK`,
+`terraform fmt -check`/`init`/`validate` clean, secret grep empty.
+
+**Two deliberate deviations from SPEC.md, both because the spec's wording is wrong about AWS:**
+
+1. SPEC §2 asks for lifecycle policies shaped "Standard → IA → Glacier IR → expiry". The `raw` bucket
+   does exactly that (its part files are ~500 KB). The `reports` (~1.4 KB) and `processed` (~400 B)
+   buckets now expire without tiering: the infrequent-access classes bill a **128 KB minimum per
+   object**, so tiering them multiplies the storage line rather than reducing it (docs/COST.md has the
+   arithmetic: 61 GB-month instead of 0.67 GB-month for the reports zone). Expiry and
+   noncurrent-version cleanup are unchanged everywhere.
+2. SPEC §2 describes the SES free tier as "beyond 62k msgs/mo or while in sandbox". That is the
+   pre-2025-07-15 tier: SES has no free tier for accounts created now, and the default plan is
+   Essentials at $0.16/1,000 emails (sourced in docs/COST.md). The cost model uses the current one.
+
+The headline defect, re-executed on this tree. The review's repro was a request with no JWT claims but
+`X-Caller-Agent-Id: AGT-000009` / `X-Caller-Role: reports-admin` for `agent_id=AGT-000001`, which
+returned HTTP 200 with **another agent's** `report_key`:
+
+```console
+$ .venv/Scripts/python.exe "$LOCALAPPDATA/Temp/gates/authz_repro.py"
+--- default (dev flag unset) ---
+status: 401 body: {"error":"unauthenticated"}
+--- with AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK=1 ---
+status: 200 agent_id: AGT-000001
+exploit closed
+```
+
+(The second block is the documented local-only switch working as intended, with a
+`presign_header_identity_enabled` warning logged. The deployed stack never sets it, and
+`test_the_deployed_environment_never_enables_the_header_identity_fallback` asserts that.)
 
 ## Reproduce all of it
 
@@ -370,14 +487,25 @@ Honest list of what did **not** run here:
    locally, but "works on AWS" is inferred, not demonstrated.
 2. **`terraform plan` was not run** (it needs credentials). Resource-attribute errors that only
    surface at plan/apply time (e.g. an API name that already exists) would not have been caught.
-3. **The `presign` HTTP API is not wired to a real authorizer.** The function's authz logic is tested
-   (including a URL that resolves), but the JWT authorizer attachment is left to the deployer; the
-   offline tests inject claims directly.
+3. **The `presign` HTTP API's gateway authorizer is configured, not exercised.** The route carries a
+   real `aws_apigatewayv2_authorizer` of type JWT and uses it as soon as `presign_jwt_issuer` is set
+   (asserted by parsing the Terraform); with the default empty issuer the route is `NONE` and the
+   function is the only gate. The function's authz logic is tested — including a pre-signed URL that
+   really resolves and the spoofed-header cases — but no request ever went through an API Gateway.
 4. **No AWS-side observability was exercised.** EMF documents were captured from the logger output and
-   `PutMetricData` was read back through moto; CloudWatch Logs metric filters and alarms were asserted
-   by parsing the Terraform, not by firing them.
-5. **The SES sandbox path is simulated.** moto enforces the "sender and recipient must be verified"
-   rule that the real sandbox enforces, but no real bounce/complaint flow was exercised.
+   their namespace/name/dimension identities were checked against every alarm and dashboard reference
+   in the Terraform. The pipeline publishes through EMF only (a `PutMetricData` probe in a separate
+   namespace is exercised by `scripts/e2e_local.py`), so the API path is proven to work but is not the
+   path the alarms read. CloudWatch Logs metric filters and alarms were asserted by parsing the
+   Terraform, not by firing them.
+5. **The SES sandbox path is simulated, and moto does not enforce the sandbox rule.** A send to an
+   unverified recipient *succeeds* under moto (executed: `verify_recipients` was 200 while the 5k e2e
+   emailed 381 agents, and nothing failed). What the offline path therefore proves is narrower than
+   it looks: the dispatcher builds and sends the message, the SES store captures it, and every
+   recipient is *verified* first (`verify_roster_recipients`) as a rehearsal of the sandbox
+   requirement. It does **not** prove that an unverified recipient is rejected — on real AWS that
+   comes back as `MessageRejected` and the message goes to the DLQ (RUNBOOK §5a). No bounce or
+   complaint flow was exercised either.
 6. **`make` was verified with GNU Make 3.81 on Windows** (`make -n`, `make help`); the targets were
    run as their underlying commands rather than through `make` end to end. CI runs the same commands
    directly.

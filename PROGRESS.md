@@ -122,3 +122,46 @@ Appended after each milestone. Newest entries at the bottom.
   1,940 s wall (dispatch stage 1,480 s) because the host was busy with other work during it - the same
   run on a quiet host was 960 s. Both transcripts are in VERIFY.md, labelled with which is which.
 
+## 2026-09-21 - Milestone 9: adversarial review response
+
+An independent review of commit `9604141` confirmed the engineering and found sixteen defects. All
+sixteen are closed, each with a test that failed before the fix:
+
+- **Authorisation bypass (high).** `presign` trusted caller-supplied `X-Caller-Agent-Id` /
+  `X-Caller-Role` headers, and the deployed route had no authorizer, so spoofed headers returned
+  another agent's report. The fallback is now behind `AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK`
+  (default off), and Terraform carries a real JWT authorizer that attaches as soon as
+  `presign_jwt_issuer` is set.
+- **Money bug + three more chunker/Spark divergences (high).** The chunker quantised
+  `commission_rate` to 2dp before multiplying (`99999.99 × 0.0750` = 8000.00 against Spark's 7500.00,
+  and the delta reached the TOTAL row and the email). Fixed with a 4dp rate parser; the divergences
+  (claim attributed by the claim's own `agent_id`, a policy with no roster row, a replayed policy row)
+  are fixed too, and a new adversarial byte-comparison test pins all four.
+- **Idempotency race (high).** Marker updates were unconditional: two workers could both claim a
+  stale lease (both email) and a late `mark_failed` could regress a `sent` marker (emailing again).
+  Every update is now a compare-and-set (`If-Match` on S3, an exclusive lock + content hash locally),
+  each claim mints a `lease_id`, and `sent` is terminal.
+- **Silent non-delivery (three paths).** A live-lease duplicate was acknowledged (message deleted, no
+  email), `AccountSendingPausedException` was permanent (no DLQ entry), and a corrupt marker was
+  permanent (no DLQ entry). Now: `in_flight` is `deferred` and redelivered, the pause is retryable,
+  and every failed send goes to the DLQ - only an unparseable payload is acknowledged, after being
+  quarantined to S3.
+- **Monitoring that could not fire.** `emails_not_sent` alarmed on `MessagesEnqueued > 0` (true on
+  every successful day) against a dimension set nobody published; `dispatcher_errors` watched a
+  metric filter with no `dimensions` block; 4 of the dashboard's 8 references used unpublished
+  dimension sets. The alarm is now metric math over the two published metrics, the filters declare
+  their dimensions, and the per-day `ReportDate` dimension is gone (it also cost ~$54/month and made
+  the metrics un-alarmable).
+- **Metrics published twice** (EMF *and* `PutMetricData`), doubling every `Sum`; **a false moto/SES
+  claim** in VERIFY.md (moto does not enforce the sandbox rule - the e2e verified 200 recipients
+  while emailing 381, now every roster address is verified); **a cost model wrong in four places**;
+  an **EMR log ARN that granted nothing**; **dead configuration** (`AGENT_REPORTS_EMR_ROW_THRESHOLD`
+  is now read and logs `emr_routing_advised`); a **Terraform suite that could vanish as skips**
+  (`pytest.importorskip("hcl2")` removed); a **misleading sqs.tf comment**; and **README's EMR
+  overstatement**.
+- Gates on the final tree: ruff + format clean (56 files), mypy 0 errors (50 files), **389 tests
+  green twice consecutively** (508 s and 340 s, 0 skipped), 92% coverage, 5,000-row e2e `E2E OK`
+  (381 recipients verified), 50,000-row e2e `E2E OK`, terraform fmt/init/validate clean, secret grep
+  empty.
+
+
