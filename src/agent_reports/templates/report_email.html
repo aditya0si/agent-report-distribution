@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Agent report $report_date</title>
+  </head>
+  <body style="margin:0;padding:24px;background:#f5f6f8;font-family:Segoe UI,Arial,sans-serif;color:#1f2933;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:8px;">
+      <tr>
+        <td style="padding:24px 24px 8px 24px;">
+          <h1 style="margin:0;font-size:20px;">Daily report for $report_date</h1>
+          <p style="margin:8px 0 0 0;color:#52606d;">Hello $agent_name, your agent-wise report is ready.</p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:8px 24px 0 24px;">
+          <table role="presentation" width="100%" cellpadding="8" cellspacing="0" style="border-collapse:collapse;font-size:14px;">
+            <tr><td style="border-bottom:1px solid #e4e7eb;color:#52606d;">Agent</td><td style="border-bottom:1px solid #e4e7eb;">$agent_id ($region / $branch)</td></tr>
+            <tr><td style="border-bottom:1px solid #e4e7eb;color:#52606d;">Policies</td><td style="border-bottom:1px solid #e4e7eb;">$policy_count</td></tr>
+            <tr><td style="border-bottom:1px solid #e4e7eb;color:#52606d;">Premium written</td><td style="border-bottom:1px solid #e4e7eb;">INR $premium</td></tr>
+            <tr><td style="border-bottom:1px solid #e4e7eb;color:#52606d;">Commission</td><td style="border-bottom:1px solid #e4e7eb;">INR $commission</td></tr>
+            <tr><td style="border-bottom:1px solid #e4e7eb;color:#52606d;">Claims filed</td><td style="border-bottom:1px solid #e4e7eb;">$claim_count</td></tr>
+            <tr><td style="border-bottom:1px solid #e4e7eb;color:#52606d;">Claimed / settled</td><td style="border-bottom:1px solid #e4e7eb;">INR $claim_amount / INR $settled_amount</td></tr>
+            <tr><td style="color:#52606d;">Loss ratio</td><td>$loss_ratio</td></tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px;">
+          <a href="$download_url" style="display:inline-block;background:#1f6feb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:600;">Download CSV report</a>
+          <p style="margin:16px 0 0 0;color:#52606d;font-size:13px;">
+            This link is personal to you and expires in $expires_in_hours ($expires_at UTC). Do not forward it.
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 24px 24px 24px;color:#9aa5b1;font-size:12px;">
+          $sender &middot; automated message, replies are not monitored.
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

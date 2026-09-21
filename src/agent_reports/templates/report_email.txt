@@ -1,0 +1,18 @@
+Hello $agent_name,
+
+Your daily agent report for $report_date is ready.
+
+Agent          : $agent_id ($region / $branch)
+Policies       : $policy_count
+Premium written: INR $premium
+Commission     : INR $commission
+Claims filed   : $claim_count (claimed INR $claim_amount, settled INR $settled_amount)
+Loss ratio     : $loss_ratio
+
+Download your report (link expires in $expires_in_hours):
+$download_url
+
+The link is personal to you and expires at $expires_at UTC. Do not forward it.
+
+$sender
+Automated message - replies to this address are not monitored.
