@@ -117,4 +117,8 @@ Appended after each milestone. Newest entries at the bottom.
   green, 92% coverage** (2,396 statements, 136 missed), Spark module 5 passed, 5,000-row e2e `E2E OK`,
   50,000-row e2e re-run, terraform validate clean, secret grep empty. README/VERIFY.md numbers updated
   to match the new runs.
+- The 50,000-row e2e on the hardened tree finished **`E2E OK`**: 52,471 rows in, 3,805 agents, 3,805
+  reports, 3,805 emails, queue drained, DLQ empty, pre-signed link verified byte-for-byte. It took
+  1,940 s wall (dispatch stage 1,480 s) because the host was busy with other work during it - the same
+  run on a quiet host was 960 s. Both transcripts are in VERIFY.md, labelled with which is which.
 

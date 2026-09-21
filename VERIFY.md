@@ -180,6 +180,10 @@ E2E OK
 
 ### The same script at the full demo size
 
+Re-run on the hardened tree (the final one). Note the wall time: it is ~2× the earlier run of the
+same script on the same machine, because this host was busy with other work during it — the per-stage
+shape is unchanged, only the host contention differs. The earlier transcript follows, for comparison.
+
 ```console
 $ .venv/Scripts/python.exe scripts/e2e_local.py --rows 50000 --shards 4 --quiet
 === Agent Report Distribution - offline end-to-end (moto) ===
@@ -198,13 +202,22 @@ cloudwatch metrics  : 10 published (AgentsDiscovered, BatchItemFailures, Dispatc
 pre-signed link     : HTTP 200, 1,420 bytes, matches report object: True
 sample report       : reports/dt=2026-09-20/agent_id=AGT-000001/report.csv
 manifest            : s3://agent-reports-processed/state/runs/dt=2026-09-20/manifest.json
+stage timings (s)   : generate=0.656, aggregate=29.274, fanout=420.356, dispatch=1480.185
+duration            : 1939.851 s (wall 1941.108 s)
+
+E2E OK
+```
+
+The earlier run of the same command (pre-hardening tree, quieter host):
+
+```console
 stage timings (s)   : generate=0.748, aggregate=12.248, fanout=130.629, dispatch=807.027
 duration            : 959.865 s (wall 961.563 s)
 
 E2E OK
 ```
 
-16 minutes for a 3,805-agent day, with **807 s of that in the dispatch stage** — that is moto
+Half an hour for a 3,805-agent day, with **1,480 s of that in the dispatch stage** — that is moto
 serialising ~3,800 × (SQS receive + S3 lease write + S3 HEAD + S3 GET + SES send + marker write +
 SQS delete) in a single process, not the pipeline's own latency: the per-message dispatcher latency
 recorded in the EMF metrics for the same run was ~75 ms (`DispatchLatencyMs`).

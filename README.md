@@ -144,7 +144,7 @@ and the e2e output, are in [VERIFY.md](VERIFY.md).
 | Terraform | `fmt -check` and `validate` clean (root module + EMR module) | `make tf-validate` |
 | Dataset generation | 52,471 rows in 0.83 s (38% headroom over the 50k target) | `agent-reports generate --rows 50000` |
 | Offline e2e | 5,000-row day: 381 agents, 381 reports, 381 emails, queue drained, pre-signed link verified byte-for-byte | `make e2e` |
-| Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, queue drained, link verified, 960 s wall (moto-bound) | `python scripts/e2e_local.py --rows 50000 --shards 4` |
+| Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, queue drained, link verified, 1,940 s wall on a busy host (960 s on a quiet one — moto-bound either way) | `python scripts/e2e_local.py --rows 50000 --shards 4` |
 | Spark vs chunker | byte-identical reports for all 40 agents, `local[2]`, real shuffle | `pytest tests/integration/test_spark_job.py` |
 | Spark job runtime | the 5-test Spark module runs in 25-60 s including JVM + session start (`5 passed in 60.35s` on the last run; JVM startup dominates and varies) | `pytest tests/integration/test_spark_job.py -q` |
 
