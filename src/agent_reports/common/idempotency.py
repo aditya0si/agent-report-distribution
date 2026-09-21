@@ -71,7 +71,15 @@ class DispatchRecord:
 
     @classmethod
     def from_json(cls, text: str) -> DispatchRecord:
-        raw = json.loads(text)
+        try:
+            raw = json.loads(text)
+        except ValueError as exc:
+            # A marker that cannot be parsed must be reported as a config problem with the key in
+            # context, not as a bare JSONDecodeError three frames down.
+            raise ConfigError(
+                "dispatch marker is not valid JSON",
+                context={"bytes": len(text), "prefix": text[:80]},
+            ) from exc
         if not isinstance(raw, dict):
             raise ConfigError("dispatch marker must be a JSON object")
         known = set(cls.__dataclass_fields__)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -286,16 +287,35 @@ class LocalStorage:
         path = self.path_for(relative_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         if if_none_match:
-            if path.exists():
-                raise FileExistsError(str(path))
-            # O_EXCL gives us the same atomic create-if-absent guarantee S3 gives with
-            # IfNoneMatch: two racing writers cannot both win.
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(data)
+            self._create_if_absent(path, data)
         else:
             path.write_bytes(data)
         return path.as_uri()
+
+    def _create_if_absent(self, path: Path, data: bytes) -> None:
+        """Atomically create *path* with the full content, or raise ``FileExistsError``.
+
+        ``O_EXCL`` alone is not enough: it publishes the name before the bytes are written, so a
+        racing reader can observe an empty file (which is exactly the race the dispatch ledger is
+        trying to make impossible). So the data is written to a private temp file first and then
+        hard-linked into place - ``link`` is atomic and fails if the target already exists.
+        """
+        if path.exists():
+            raise FileExistsError(str(path))
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        temporary.write_bytes(data)
+        try:
+            os.link(temporary, path)
+        except (AttributeError, NotImplementedError, OSError) as exc:  # pragma: no cover
+            if isinstance(exc, FileExistsError):
+                raise
+            # Filesystem without hard links (rare, e.g. some network shares): fall back to O_EXCL,
+            # which keeps the create-if-absent guarantee even though the write is not atomic.
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def get_bytes(self, relative_key: str) -> bytes:
         path = self.path_for(relative_key)

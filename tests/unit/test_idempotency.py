@@ -206,6 +206,20 @@ class TestConditionalCreate:
             store.put_bytes("k", b"second", if_none_match=True)
         assert store.get_bytes("k") == b"first"
 
+    def test_create_if_absent_never_publishes_a_partial_file(self, tmp_path: Path) -> None:
+        """A racing reader must see either no file or the whole file - never an empty one."""
+        store = LocalStorage(tmp_path)
+        payload = b'{"status":"dispatching","attempts":1}'
+        store.put_bytes("marker.json", payload, if_none_match=True)
+        assert store.get_bytes("marker.json") == payload
+        assert [path.name for path in tmp_path.iterdir()] == ["marker.json"]  # no temp left behind
+
+    def test_marker_that_is_not_json_is_reported_as_a_config_error(self) -> None:
+        from agent_reports.common.idempotency import DispatchRecord
+
+        with pytest.raises(ConfigError, match="not valid JSON"):
+            DispatchRecord.from_json("")
+
     def test_two_threads_cannot_both_claim(self, tmp_path: Path) -> None:
         ledger = DispatchLedger(LocalStorage(tmp_path / "processed"))
         results: list[bool] = []
