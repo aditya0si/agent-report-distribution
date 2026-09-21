@@ -202,9 +202,11 @@ E2E OK
 
 ### The same script at the full demo size
 
-Re-run on the hardened tree (the final one). Note the wall time: it is ~2× the earlier run of the
-same script on the same machine, because this host was busy with other work during it — the per-stage
-shape is unchanged, only the host contention differs. The earlier transcript follows, for comparison.
+Re-run on the review-response tree. The wall time is host-dependent (1,832 s here, 960 s on a quiet
+host, for the identical work): the shape of the run is what matters, and the per-stage split shows
+moto serialising ~3,800 × (SQS receive + S3 lease write + S3 HEAD + S3 GET + SES send + marker write +
+SQS delete) in one process, not the pipeline's own latency — the per-message dispatcher latency
+recorded in the EMF metrics for the same run was ~75 ms (`DispatchLatencyMs`).
 
 ```console
 $ .venv/Scripts/python.exe scripts/e2e_local.py --rows 50000 --shards 4 --quiet
@@ -215,40 +217,44 @@ agents discovered   : 3,805
 agents processed    : 3,805
 reports written     : 3,805
 emails sent         : 3,805 (SES captured 3,805)
+recipients verified : 3,805 (every roster address; moto does NOT enforce the SES sandbox rule - see VERIFY.md)
 duplicates / failed : 0 / 0
 queue drained       : yes
 dlq depth           : 0
 objects written     : 7,624
 metrics emitted     : 386 EMF documents (ReportsWritten, RowsIn, AgentsDiscovered, MessagesEnqueued, BatchItemFailures, EmailsSent, EmailsFailed, DuplicatesSuppressed, DispatchLatencyMs, ReportAgeSeconds)
-cloudwatch metrics  : 10 published (AgentsDiscovered, BatchItemFailures, DispatchLatencyMs, DuplicatesSuppressed, EmailsFailed, EmailsSent, MessagesEnqueued, ReportAgeSeconds, ReportsWritten, RowsIn)
+metric identities   : 12 namespace/name/dimension sets
+                      AgentReports/AgentsDiscovered{Service=chunker}
+                      AgentReports/AgentsDiscovered{Service=orchestrator}
+                      AgentReports/BatchItemFailures{Service=dispatcher}
+                      AgentReports/BatchItemFailures{Service=orchestrator}
+                      AgentReports/DispatchLatencyMs{Service=dispatcher}
+                      AgentReports/DuplicatesSuppressed{Service=dispatcher}
+                      AgentReports/EmailsFailed{Service=dispatcher}
+                      AgentReports/EmailsSent{Service=dispatcher}
+                      AgentReports/MessagesEnqueued{Service=orchestrator}
+                      AgentReports/ReportAgeSeconds{Service=dispatcher}
+                      AgentReports/ReportsWritten{Service=chunker}
+                      AgentReports/RowsIn{Service=chunker}
+cloudwatch api probe: 1 datapoint(s) written, 1 metric(s) read back from AgentReportsSelfTest
 pre-signed link     : HTTP 200, 1,420 bytes, matches report object: True
 sample report       : reports/dt=2026-09-20/agent_id=AGT-000001/report.csv
 manifest            : s3://agent-reports-processed/state/runs/dt=2026-09-20/manifest.json
-stage timings (s)   : generate=0.656, aggregate=29.274, fanout=420.356, dispatch=1480.185
-duration            : 1939.851 s (wall 1941.108 s)
+stage timings (s)   : generate=0.783, aggregate=31.199, fanout=440.250, before_dispatch=17.161, dispatch=1331.393
+duration            : 1829.623 s (wall 1831.594 s)
 
 E2E OK
 ```
 
-The earlier run of the same command (pre-hardening tree, quieter host):
+The `before_dispatch` stage is the new SES rehearsal: every one of the 3,805 roster addresses is
+verified before the first send (17 s of moto API calls), which is what the previous 5k run skipped —
+it verified 200 recipients and emailed 381.
 
-```console
-stage timings (s)   : generate=0.748, aggregate=12.248, fanout=130.629, dispatch=807.027
-duration            : 959.865 s (wall 961.563 s)
-
-E2E OK
-```
-
-Half an hour for a 3,805-agent day, with **1,480 s of that in the dispatch stage** — that is moto
-serialising ~3,800 × (SQS receive + S3 lease write + S3 HEAD + S3 GET + SES send + marker write +
-SQS delete) in a single process, not the pipeline's own latency: the per-message dispatcher latency
-recorded in the EMF metrics for the same run was ~75 ms (`DispatchLatencyMs`).
-
-**The first attempt at this run failed**, which is the most useful thing in this file: it stopped
-after 2,000 of 3,805 emails with the queue half-full, because the dispatch loop's batch cap was a
-fixed 200. The script exited non-zero and named both problems (`emails sent (2000) != agents
-reported (3805)`, `SQS queue did not drain`). The cap is now derived from the fan-out size, and the
-run above is the re-run.
+**The first attempt at this run (before the hardening pass) failed**, which is the most useful thing in
+this file: it stopped after 2,000 of 3,805 emails with the queue half-full, because the dispatch loop's
+batch cap was a fixed 200. The script exited non-zero and named both problems (`emails sent (2000) !=
+agents reported (3805)`, `SQS queue did not drain`). The cap is now derived from the fan-out size, and
+the run above is the re-run.
 
 ## Gate 6 — secret grep
 

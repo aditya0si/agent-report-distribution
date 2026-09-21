@@ -155,7 +155,7 @@ and the e2e output, are in [VERIFY.md](VERIFY.md).
 | Terraform | `fmt -check`, `init -backend=false` and `validate` clean (root module + EMR module) | `make tf-validate` |
 | Dataset generation | 52,471 rows in 0.83 s (38% headroom over the 50k target) | `agent-reports generate --rows 50000` |
 | Offline e2e | 5,000-row day: 381 agents, 381 reports, 381 emails, **381 recipients verified**, queue drained, pre-signed link verified byte-for-byte | `make e2e` |
-| Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, queue drained, link verified | `python scripts/e2e_local.py --rows 50000 --shards 4` |
+| Offline e2e at scale | 50,000-row day: 52,471 rows, 3,805 agents, 3,805 reports, 3,805 emails, **3,805 recipients verified**, queue drained, link verified (1,832 s wall on this host; the same run was 960 s on a quiet one) | `python scripts/e2e_local.py --rows 50000 --shards 4` |
 | Spark vs chunker | byte-identical reports for all 40 agents on the generated day **and** on an adversarial day (sub-paise rates, a replayed partition, a foreign-agent claim, a policy with no roster row) | `pytest tests/integration/test_spark_job.py` |
 | Spark job runtime | the 6-test Spark module runs in 90-91 s including JVM + session start (JVM startup dominates and varies) | `pytest tests/integration/test_spark_job.py -q` |
 | Cost model | ~$27.05/month for the free-tier path, ~$29.32 with the EMR path, recomputed from live AWS prices | `python scripts/cost_model.py` |
