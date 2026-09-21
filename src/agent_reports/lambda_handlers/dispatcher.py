@@ -22,9 +22,10 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from ..common.aws import cloudwatch_client, ses_client
 from ..common.errors import (
@@ -278,7 +279,7 @@ def dispatch_one(
             policy=SES_SEND_POLICY,
             operation="ses.send_email",
         )
-    except BaseException as exc:  # noqa: BLE001 - classified below
+    except BaseException as exc:
         error = classify(exc)
         ledger.mark_failed(
             report_date,
@@ -359,12 +360,10 @@ def run_dispatcher(
             log_event(
                 _LOG,
                 "message_quarantined",
-                **{
-                    "message_id": message_id,
-                    "quarantine_key": key,
-                    "level": 40,
-                    **exc.as_log_fields(),
-                },
+                level=40,
+                message_id=message_id,
+                quarantine_key=key,
+                error=exc.as_log_fields(),
             )
             continue
 
@@ -394,12 +393,10 @@ def run_dispatcher(
             log_event(
                 _LOG,
                 "dispatch_failed",
-                **{
-                    "message_id": message_id,
-                    "agent_id": outcome.agent_id,
-                    "level": 40,
-                    **exc.as_log_fields(),
-                },
+                level=40,
+                message_id=message_id,
+                agent_id=outcome.agent_id,
+                error=exc.as_log_fields(),
             )
             result.outcomes.append(outcome)
             continue
@@ -443,9 +440,7 @@ def run_dispatcher(
             )
         ages = [o.report_age_seconds for o in result.outcomes if o.report_age_seconds is not None]
         if ages:
-            metrics.append(
-                Metric(METRIC_NAMES["report_age_seconds"], max(ages), unit="Seconds")
-            )
+            metrics.append(Metric(METRIC_NAMES["report_age_seconds"], max(ages), unit="Seconds"))
         emit_emf(metrics, dimensions)
         if cloudwatch is not None:
             put_metric_data(cloudwatch, metrics, dimensions)

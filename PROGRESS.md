@@ -49,3 +49,36 @@ Appended after each milestone. Newest entries at the bottom.
   metrics. Bugs fixed along the way: report-key vs agent-id mix-up in the orchestrator, SQS records
   not normalised into event-source-mapping shape, duplicate `message_id` kwarg in a log call, and
   telemetry capture being muted by the configured log level.
+
+## 2026-09-21 - Milestone 5: tests, and three real bugs they found
+
+- Unit + integration suites added: keys/settings/errors/retry/report shaping/generator/aggregation/
+  idempotency/email templates/presign/orchestrator/dispatcher/spark shaping/terraform config, plus
+  moto end-to-end and a real local PySpark run.
+- The Spark-vs-chunker byte comparison found three genuine bugs that unit tests had missed:
+  1. `sum_insured` was written as a copy of `premium` in the Spark job (copy/paste in the select);
+  2. commission used the Decimal context default (`ROUND_HALF_EVEN`), so an exact half-paise tie
+     rounded down in the chunker but up in Spark (`23380.45 x 0.10`);
+  3. Spark's partitioned writer re-sorted by `agent_id` and scrambled the intra-agent row order, so
+     DETAIL rows were not sorted by `policy_id`; the finalizer now enforces the contract.
+- Also fixed: the dispatch marker key was double-prefixed (`state/state/...`), `format_money("")`
+  raised, and `_RESERVED` logging keys did not include `message`/`asctime`.
+- Result: **316 tests green, 92% coverage** (see VERIFY.md for the exact run).
+
+## 2026-09-21 - Milestone 6: infrastructure, CI and docs
+
+- Terraform stack under `infra/terraform`: three lifecycle-managed buckets, SQS + DLQ + redrive,
+  four least-privilege Lambda roles (no wildcard actions, asserted by a test), log groups with
+  retention, metric filters + alarms + dashboard, EventBridge schedules, SES identity/config set, and
+  an optional EMR Serverless module (`enable_emr_module`). `terraform fmt -check` and `validate`
+  clean.
+- `Makefile` (setup/lint/typecheck/test/coverage/e2e/demo/tf-validate/all) and
+  `.github/workflows/ci.yml` running the same gates on ubuntu with Java provisioned, plus a job that
+  fails if a credential-shaped assignment is ever committed.
+- Docs: README (architecture, API table, measured results), `docs/RUNBOOK.md` (local run, AWS
+  deploy, SES sandbox, rollback, DLQ-storm and SES-throttling playbooks), `docs/COST.md` (prices
+  pulled from the AWS Price List API with source URLs, everything else marked unverified),
+  `docs/SCHEMA.md` (raw + report + state schemas).
+- Tooling installed outside the repo for the gates: Temurin 21 JRE, Terraform 1.9.8, Hadoop
+  winutils/hadoop.dll, GNU Make 3.81.
+

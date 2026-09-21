@@ -3,24 +3,47 @@
 from __future__ import annotations
 
 import random
+from functools import partial
 
 import botocore.exceptions
 import pytest
 
 from agent_reports.common import errors
+from agent_reports.common.errors import AgentReportsError
 from agent_reports.common.retry import RetryPolicy, RetryStats, call_with_retry, compute_delay
 
 
-def client_error(code: str, status: int = 400, operation: str = "SendMessage") -> botocore.exceptions.ClientError:
+def _constant(value: float) -> float:
+    """Deterministic stand-in for ``random.random``."""
+    return value
+
+
+def client_error(
+    code: str, status: int = 400, operation: str = "SendMessage"
+) -> botocore.exceptions.ClientError:
     return botocore.exceptions.ClientError(
-        {"Error": {"Code": code, "Message": f"{code} happened"}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        {
+            "Error": {"Code": code, "Message": f"{code} happened"},
+            "ResponseMetadata": {
+                "HTTPStatusCode": status,
+                "RequestId": "req-1",
+                "HostId": "host-1",
+                "HTTPHeaders": {},
+                "RetryAttempts": 0,
+            },
+        },
         operation,
     )
 
 
 class TestClassify:
     def test_retryable_aws_codes(self) -> None:
-        for code in ("Throttling", "TooManyRequestsException", "ServiceUnavailable", "RequestTimeout"):
+        for code in (
+            "Throttling",
+            "TooManyRequestsException",
+            "ServiceUnavailable",
+            "RequestTimeout",
+        ):
             classified = errors.classify(client_error(code, status=500))
             assert classified.retryable is True, code
             assert isinstance(classified, errors.TransientError)
@@ -86,7 +109,7 @@ class TestBackoff:
         policy = RetryPolicy(base_delay=0.1, max_delay=1.0, jitter="full")
         for attempt in range(6):
             for value in (0.0, 0.25, 0.5, 0.999, 1.0):
-                delay = compute_delay(attempt, policy, rand=lambda value=value: value)
+                delay = compute_delay(attempt, policy, rand=partial(_constant, value))
                 assert 0.0 <= delay <= policy.ceiling(attempt) + 1e-9
 
     def test_full_jitter_actually_varies(self) -> None:
@@ -194,12 +217,16 @@ class TestCallWithRetry:
                 raise client_error("ServiceUnavailable", status=503)
             return "ok"
 
+        def on_retry(attempt: int, exc: BaseException, delay: float) -> None:
+            code = exc.code if isinstance(exc, AgentReportsError) else type(exc).__name__
+            seen.append((attempt, code, delay))
+
         call_with_retry(
             flaky,
             policy=RetryPolicy(max_attempts=4, base_delay=0.1, max_delay=0.4),
             sleep=lambda _: None,
             rand=lambda: 1.0,
-            on_retry=lambda attempt, exc, delay: seen.append((attempt, exc.code, delay)),
+            on_retry=on_retry,
         )
         assert [attempt for attempt, _, _ in seen] == [1, 2]
         assert {code for _, code, _ in seen} == {"DependencyError"}
@@ -215,7 +242,9 @@ class TestCallWithRetry:
 
         result = call_with_retry(
             boom,
-            policy=RetryPolicy(max_attempts=3, base_delay=0.0, max_delay=0.0, retry_on=(ValueError,)),
+            policy=RetryPolicy(
+                max_attempts=3, base_delay=0.0, max_delay=0.0, retry_on=(ValueError,)
+            ),
             sleep=lambda _: None,
         )
         assert result == "recovered"
@@ -231,7 +260,9 @@ class TestCallWithRetry:
         with pytest.raises(errors.PermanentError):
             call_with_retry(
                 boom,
-                policy=RetryPolicy(max_attempts=3, base_delay=0.0, max_delay=0.0, retry_on=(ValueError,)),
+                policy=RetryPolicy(
+                    max_attempts=3, base_delay=0.0, max_delay=0.0, retry_on=(ValueError,)
+                ),
                 sleep=lambda _: None,
             )
         assert calls["count"] == 1

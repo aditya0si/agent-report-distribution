@@ -16,6 +16,7 @@ keys that do not belong to the layout, so listing a prefix full of unrelated obj
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date as _date
 
@@ -32,8 +33,8 @@ __all__ = [
     "raw_key",
     "raw_prefix",
     "report_key",
-    "report_prefix_for",
     "report_partition_prefix",
+    "report_prefix_for",
     "validate_agent_id",
     "validate_report_date",
 ]
@@ -161,10 +162,10 @@ def parse_report_key(key: str) -> AgentReportKey | None:
     return AgentReportKey(report_date=report_date, agent_id=agent_id)
 
 
-def agent_ids_from_report_keys(keys: object) -> list[str]:
+def agent_ids_from_report_keys(keys: Iterable[str]) -> list[str]:
     """Extract the sorted, de-duplicated agent ids from an iterable of object keys."""
     found: set[str] = set()
-    for key in keys:  # type: ignore[union-attr]
+    for key in keys:
         parsed = parse_report_key(str(key))
         if parsed is not None:
             found.add(parsed.agent_id)

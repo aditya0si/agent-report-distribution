@@ -20,7 +20,7 @@ from .common.settings import Settings
 from .common.storage import Zones, open_zones
 from .ingest.generator import DatasetConfig, DatasetStats, generate_dataset
 from .lambda_handlers.chunker import ChunkerResult, run_chunker
-from .lambda_handlers.dispatcher import DispatchResult, run_dispatcher
+from .lambda_handlers.dispatcher import run_dispatcher
 from .lambda_handlers.orchestrator import OrchestratorResult, run_orchestrator
 
 __all__ = [
@@ -174,7 +174,7 @@ def queue_depth(sqs: Any, queue_url: str) -> dict[str, int]:
 
 def extract_download_url(text: str) -> str:
     """Pull the pre-signed link out of a rendered email body (plain or HTML)."""
-    import re  # noqa: PLC0415 - tiny, only needed here
+    import re
 
     match = re.search(r"https?://[^\s\"'<>]+", text)
     if match is None:
@@ -334,9 +334,7 @@ def run_local_pipeline(
                 message_id = str(record.get("messageId", ""))
                 if message_id in failed_ids:
                     continue  # left for redelivery, exactly like the event source mapping
-                active_sqs.delete_message(
-                    QueueUrl=queue_url, ReceiptHandle=record["receiptHandle"]
-                )
+                active_sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=record["receiptHandle"])
         result.stages["dispatch"] = time.perf_counter() - stage_started
 
         depth = queue_depth(active_sqs, queue_url)

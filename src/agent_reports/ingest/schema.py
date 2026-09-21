@@ -126,23 +126,67 @@ REGIONS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 CLAIM_TYPES: Final[tuple[str, ...]] = ("Cashless", "Reimbursement")
-CLAIM_STATUSES: Final[tuple[float, ...]] = (0.55, 0.20, 0.15, 0.10)  # Settled, Approved, Rejected, Pending
+CLAIM_STATUSES: Final[tuple[float, ...]] = (
+    0.55,
+    0.20,
+    0.15,
+    0.10,
+)  # Settled, Approved, Rejected, Pending
 CLAIM_STATUS_NAMES: Final[tuple[str, ...]] = ("Settled", "Approved", "Rejected", "Pending")
 POLICY_STATUSES: Final[tuple[str, ...]] = ("Active", "Renewed", "Lapsed")
 HOSPITAL_TIERS: Final[tuple[str, ...]] = ("Tier-1", "Tier-2", "Tier-3")
 
 #: ICD-10 chapters, coarse enough to stay non-identifying.
 DIAGNOSIS_CHAPTERS: Final[tuple[str, ...]] = (
-    "A", "C", "E", "F", "I", "J", "K", "M", "N", "O", "S", "Z",
+    "A",
+    "C",
+    "E",
+    "F",
+    "I",
+    "J",
+    "K",
+    "M",
+    "N",
+    "O",
+    "S",
+    "Z",
 )
 
 FIRST_NAMES: Final[tuple[str, ...]] = (
-    "Aarav", "Isha", "Rohan", "Meera", "Kabir", "Ananya", "Vikram", "Priya",
-    "Dev", "Nisha", "Arjun", "Kavya", "Rahul", "Sneha", "Manish", "Divya",
+    "Aarav",
+    "Isha",
+    "Rohan",
+    "Meera",
+    "Kabir",
+    "Ananya",
+    "Vikram",
+    "Priya",
+    "Dev",
+    "Nisha",
+    "Arjun",
+    "Kavya",
+    "Rahul",
+    "Sneha",
+    "Manish",
+    "Divya",
 )
 LAST_NAMES: Final[tuple[str, ...]] = (
-    "Sharma", "Iyer", "Patel", "Nair", "Reddy", "Bose", "Chauhan", "Desai",
-    "Gupta", "Kulkarni", "Mehta", "Rao", "Singh", "Verma", "Joshi", "Pillai",
+    "Sharma",
+    "Iyer",
+    "Patel",
+    "Nair",
+    "Reddy",
+    "Bose",
+    "Chauhan",
+    "Desai",
+    "Gupta",
+    "Kulkarni",
+    "Mehta",
+    "Rao",
+    "Singh",
+    "Verma",
+    "Joshi",
+    "Pillai",
 )
 
 

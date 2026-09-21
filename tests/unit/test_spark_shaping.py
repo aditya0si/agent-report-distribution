@@ -89,9 +89,7 @@ class TestInsertAgentColumn:
         assert [row["row_type"] for row in rows] == ["DETAIL", "DETAIL", "TOTAL"]
 
     def test_rows_with_an_unknown_row_type_are_rejected(self) -> None:
-        broken = part_file(
-            SPARK_HEADER, SPARK_DETAIL_1.replace("DETAIL", "SUMMARY"), SPARK_TOTAL
-        )
+        broken = part_file(SPARK_HEADER, SPARK_DETAIL_1.replace("DETAIL", "SUMMARY"), SPARK_TOTAL)
         with pytest.raises(ValueError, match="exactly one TOTAL row"):
             insert_agent_column(broken, "AGT-000001")
 
@@ -101,4 +99,6 @@ class TestInsertAgentColumn:
 
     def test_duplicate_total_rows_are_rejected(self) -> None:
         with pytest.raises(ValueError, match="exactly one TOTAL row"):
-            insert_agent_column(part_file(SPARK_HEADER, SPARK_DETAIL_1, SPARK_TOTAL, SPARK_TOTAL), "AGT-000001")
+            insert_agent_column(
+                part_file(SPARK_HEADER, SPARK_DETAIL_1, SPARK_TOTAL, SPARK_TOTAL), "AGT-000001"
+            )

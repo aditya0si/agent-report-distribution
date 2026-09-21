@@ -21,9 +21,10 @@ Two writers must never both email the same agent:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping
+from typing import Any
 
 from botocore.exceptions import ClientError
 
@@ -73,7 +74,7 @@ class DispatchRecord:
         raw = json.loads(text)
         if not isinstance(raw, dict):
             raise ConfigError("dispatch marker must be a JSON object")
-        known = {f for f in cls.__dataclass_fields__}
+        known = set(cls.__dataclass_fields__)
         unknown = set(raw) - known
         if unknown:
             raise ConfigError(
@@ -98,10 +99,7 @@ class DispatchRecord:
         if self.status == STATUS_DISPATCHING:
             return not self.lease_active(now)
         # STATUS_FAILED: retry only when the failure was classified retryable.
-        return not (
-            self.last_error_code is not None
-            and self.last_error_code in _PERMANENT_REASONS
-        )
+        return not (self.last_error_code is not None and self.last_error_code in _PERMANENT_REASONS)
 
 
 @dataclass(frozen=True)

@@ -51,7 +51,7 @@ class RetryPolicy:
 
     def ceiling(self, attempt: int) -> float:
         """Un-jittered delay ceiling for a 0-based attempt number."""
-        return min(self.max_delay, self.base_delay * (2**attempt))
+        return float(min(self.max_delay, self.base_delay * (2.0**attempt)))
 
 
 @dataclass
@@ -104,7 +104,7 @@ def call_with_retry(
         counters.attempts += 1
         try:
             return fn()
-        except BaseException as exc:  # noqa: BLE001 - explicitly classified below
+        except BaseException as exc:
             classified = errors.classify(exc)
             if not _should_retry(exc, classified, active_policy):
                 raise classified from exc

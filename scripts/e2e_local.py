@@ -23,11 +23,11 @@ import boto3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent_reports.common.logging_utils import configure_logging, get_logger  # noqa: E402
-from agent_reports.common.settings import Settings, load_settings  # noqa: E402
-from agent_reports.common.storage import open_zones  # noqa: E402
-from agent_reports.pipeline import PipelineOptions, run_local_pipeline  # noqa: E402
-from agent_reports.testing import (  # noqa: E402
+from agent_reports.common.logging_utils import configure_logging, get_logger
+from agent_reports.common.settings import Settings, load_settings
+from agent_reports.common.storage import open_zones
+from agent_reports.pipeline import PipelineOptions, run_local_pipeline
+from agent_reports.testing import (
     provision_local_resources,
     sent_messages,
     verify_presigned_delivery,
@@ -80,7 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.quiet:
         # Keep the run's own log lines off stdout but still let the telemetry capture see them.
-        configure_logging(stream=open(os.devnull, "w", encoding="utf-8"), force=True)
+        # The handler holds this stream for the rest of the process, so it is not a context manager.
+        sink = Path(os.devnull).open("w", encoding="utf-8")  # noqa: SIM115
+        configure_logging(stream=sink, force=True)
     else:
         configure_logging("WARNING")
 
@@ -92,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         shards=max(1, args.shards),
     )
 
-    from moto import mock_aws  # noqa: PLC0415 - the offline backend
+    from moto import mock_aws
 
     started = time.perf_counter()
     with mock_aws():
@@ -120,7 +122,11 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = result.as_dict()
     if args.json:
-        print(json.dumps({**payload, "delivery": delivery, "wall_seconds": round(wall_seconds, 3)}, indent=2))
+        print(
+            json.dumps(
+                {**payload, "delivery": delivery, "wall_seconds": round(wall_seconds, 3)}, indent=2
+            )
+        )
 
     problems: list[str] = []
     if result.rows_in < args.rows:

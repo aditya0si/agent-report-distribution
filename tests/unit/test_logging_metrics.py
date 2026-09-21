@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
@@ -27,7 +28,7 @@ from agent_reports.common.metrics import (
 
 
 @pytest.fixture
-def log_stream() -> io.StringIO:
+def log_stream() -> Iterator[io.StringIO]:
     stream = io.StringIO()
     configure_logging("DEBUG", stream=stream, force=True)
     yield stream
@@ -154,17 +155,16 @@ class TestMetrics:
         listed = client.list_metrics(Namespace=DEFAULT_NAMESPACE)["Metrics"]
         names = {metric["MetricName"] for metric in listed}
         assert {"EmailsSent", "EmailsFailed"} <= names
-        datapoint = [
-            metric
-            for metric in listed
-            if metric["MetricName"] == "EmailsSent"
-        ][0]
+        datapoint = next(metric for metric in listed if metric["MetricName"] == "EmailsSent")
         assert datapoint["Dimensions"] == [{"Name": "Service", "Value": "dispatcher"}]
 
     def test_put_metric_data_ignores_empty_input(self, aws: object) -> None:
         import boto3
 
-        assert put_metric_data(boto3.client("cloudwatch", region_name="us-east-1"), [], {"S": "x"}) == 0
+        assert (
+            put_metric_data(boto3.client("cloudwatch", region_name="us-east-1"), [], {"S": "x"})
+            == 0
+        )
 
     def test_metric_names_are_used_by_the_pipeline(self) -> None:
         from agent_reports.lambda_handlers import chunker, dispatcher, orchestrator, presign

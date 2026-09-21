@@ -15,9 +15,10 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
@@ -143,7 +144,8 @@ def spark() -> Iterator[Any]:
             "  winget install -e --id EclipseAdoptium.Temurin.21.JRE\n"
             "or unpack the Adoptium JRE zip and export JAVA_HOME.\n"
             "CI runs these tests with actions/setup-java, so they are covered there.\n"
-            + "=" * 78 + "\n"
+            + "=" * 78
+            + "\n"
         )
         print(banner, file=sys.stderr)
         pytest.skip("no JVM available (requires_jvm)", allow_module_level=True)

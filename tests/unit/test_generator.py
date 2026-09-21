@@ -105,18 +105,19 @@ class TestGeneratedData:
         generate_dataset(config, second)
         key = "raw/dt=2026-09-20/_dataset_manifest.json"
         assert first.get_bytes(key) != second.get_bytes(key)  # different output_uri
-        assert json.loads(first.get_bytes(key))["rows_total"] == json.loads(second.get_bytes(key))[
-            "rows_total"
-        ]
+        assert (
+            json.loads(first.get_bytes(key))["rows_total"]
+            == json.loads(second.get_bytes(key))["rows_total"]
+        )
 
     def test_different_seeds_differ(self, tmp_path: Path) -> None:
         first = LocalStorage(tmp_path / "a")
         second = LocalStorage(tmp_path / "b")
         generate_dataset(DatasetConfig(report_date="2026-09-20", agents=8, seed=1), first)
         generate_dataset(DatasetConfig(report_date="2026-09-20", agents=8, seed=2), second)
-        assert first.get_bytes("raw/dt=2026-09-20/source=policies/part-00000.csv") != second.get_bytes(
+        assert first.get_bytes(
             "raw/dt=2026-09-20/source=policies/part-00000.csv"
-        )
+        ) != second.get_bytes("raw/dt=2026-09-20/source=policies/part-00000.csv")
 
     def test_sharding_does_not_change_the_rows(self, tmp_path: Path) -> None:
         """Re-sharding changes which file a row lands in, never the row itself."""
@@ -257,4 +258,6 @@ class TestCli:
         )
         assert exit_code == 0
         assert capsys.readouterr().out == ""
-        assert len(LocalStorage(tmp_path / "raw").list_keys("raw/dt=2026-09-20/source=agents/")) == 4
+        assert (
+            len(LocalStorage(tmp_path / "raw").list_keys("raw/dt=2026-09-20/source=agents/")) == 4
+        )

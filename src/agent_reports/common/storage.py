@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from botocore.exceptions import ClientError, ParamValidationError
@@ -71,7 +72,9 @@ class Storage(Protocol):
 
     def delete(self, relative_key: str) -> None: ...
 
-    def presign_get(self, relative_key: str, *, expires_in: int, filename: str | None = None) -> str: ...
+    def presign_get(
+        self, relative_key: str, *, expires_in: int, filename: str | None = None
+    ) -> str: ...
 
 
 # --------------------------------------------------------------------------- helpers
@@ -111,7 +114,7 @@ def open_store(uri: str, settings: Settings, client: Any = None) -> Storage:
 
             client = s3_client(settings)
         return S3Storage(client, bucket=bucket, prefix=prefix)
-    return LocalStorage(target)
+    return LocalStorage(Path(target))
 
 
 @dataclass(frozen=True)

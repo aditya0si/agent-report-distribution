@@ -10,8 +10,9 @@ Environment variables use the ``AGENT_REPORTS_`` prefix (see ``.env.example``).
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
-from typing import Any, Mapping
+from typing import Any
 
 from .errors import ConfigError
 

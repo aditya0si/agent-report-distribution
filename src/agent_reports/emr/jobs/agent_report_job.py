@@ -32,8 +32,9 @@ import json
 import os
 import sys
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, Sequence
+from typing import Any
 
 __all__ = [
     "REPORT_COLUMNS",
@@ -48,7 +49,7 @@ __all__ = [
 ]
 
 # The job ships the package with --py-files on EMR; locally the installed package is used.
-from agent_reports.common.report import REPORT_COLUMNS  # noqa: E402
+from agent_reports.common.report import REPORT_COLUMNS
 
 DETAIL, TOTAL = "DETAIL", "TOTAL"
 DETAIL_RANK, TOTAL_RANK = 0, 1
@@ -68,7 +69,7 @@ def build_spark_session(
     ``RawLocalFileSystem`` so local runs do not litter output directories with Hadoop ``.crc``
     checksum files.
     """
-    from pyspark.sql import SparkSession  # noqa: PLC0415 - import cost paid only when the job runs
+    from pyspark.sql import SparkSession
 
     builder = SparkSession.builder.appName(app_name)
     if master:
@@ -107,8 +108,8 @@ def _raw_path(raw_uri: str, report_date: str, source: str) -> str:
 
 def read_policies(spark: Any, raw_uri: str, report_date: str) -> Any:
     """Raw policy partitions, typed (no inference pass)."""
-    from pyspark.sql import functions as F  # noqa: PLC0415
-    from pyspark.sql.types import DecimalType, StringType, StructField, StructType  # noqa: PLC0415
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import DecimalType, StringType, StructField, StructType
 
     schema = StructType(
         [
@@ -124,22 +125,25 @@ def read_policies(spark: Any, raw_uri: str, report_date: str) -> Any:
             StructField("status", StringType()),
         ]
     )
-    return spark.read.schema(schema).option("header", True).csv(
-        _raw_path(raw_uri, report_date, "policies")
-    ).select(
-        "policy_id",
-        "agent_id",
-        "product",
-        "policy_start",
-        "policy_end",
-        F.col("sum_insured").cast(DecimalType(18, 2)).alias("sum_insured"),
-        F.col("premium").cast(DecimalType(18, 2)).alias("premium"),
-        F.col("commission_rate").cast(DecimalType(9, 4)).alias("commission_rate"),
+    return (
+        spark.read.schema(schema)
+        .option("header", True)
+        .csv(_raw_path(raw_uri, report_date, "policies"))
+        .select(
+            "policy_id",
+            "agent_id",
+            "product",
+            "policy_start",
+            "policy_end",
+            F.col("sum_insured").cast(DecimalType(18, 2)).alias("sum_insured"),
+            F.col("premium").cast(DecimalType(18, 2)).alias("premium"),
+            F.col("commission_rate").cast(DecimalType(9, 4)).alias("commission_rate"),
+        )
     )
 
 
 def read_agents(spark: Any, raw_uri: str, report_date: str) -> Any:
-    from pyspark.sql.types import StringType, StructField, StructType  # noqa: PLC0415
+    from pyspark.sql.types import StringType, StructField, StructType
 
     schema = StructType(
         [
@@ -152,14 +156,17 @@ def read_agents(spark: Any, raw_uri: str, report_date: str) -> Any:
             StructField("joined_on", StringType()),
         ]
     )
-    return spark.read.schema(schema).option("header", True).csv(
-        _raw_path(raw_uri, report_date, "agents")
-    ).select("agent_id", "agent_name", "region", "branch")
+    return (
+        spark.read.schema(schema)
+        .option("header", True)
+        .csv(_raw_path(raw_uri, report_date, "agents"))
+        .select("agent_id", "agent_name", "region", "branch")
+    )
 
 
 def read_claims(spark: Any, raw_uri: str, report_date: str) -> Any:
-    from pyspark.sql import functions as F  # noqa: PLC0415
-    from pyspark.sql.types import DecimalType, StringType, StructField, StructType  # noqa: PLC0415
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import DecimalType, StringType, StructField, StructType
 
     schema = StructType(
         [
@@ -176,25 +183,32 @@ def read_claims(spark: Any, raw_uri: str, report_date: str) -> Any:
             StructField("hospital_tier", StringType()),
         ]
     )
-    return spark.read.schema(schema).option("header", True).csv(
-        _raw_path(raw_uri, report_date, "claims")
-    ).select(
-        "policy_id",
-        "agent_id",
-        F.col("claimed_amount").cast(DecimalType(18, 2)).alias("claimed_amount"),
-        F.col("settled_amount").cast(DecimalType(18, 2)).alias("settled_amount"),
+    return (
+        spark.read.schema(schema)
+        .option("header", True)
+        .csv(_raw_path(raw_uri, report_date, "claims"))
+        .select(
+            "policy_id",
+            "agent_id",
+            F.col("claimed_amount").cast(DecimalType(18, 2)).alias("claimed_amount"),
+            F.col("settled_amount").cast(DecimalType(18, 2)).alias("settled_amount"),
+        )
     )
 
 
 def aggregate_details(policies: Any, claims: Any, agents: Any) -> Any:
     """One row per policy with its claim roll-up and commission, typed for formatting."""
-    from pyspark.sql import functions as F  # noqa: PLC0415
-    from pyspark.sql.types import DecimalType  # noqa: PLC0415
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import DecimalType
 
     claim_totals = claims.groupBy("policy_id").agg(
         F.count("*").alias("claim_count"),
-        F.coalesce(F.sum("claimed_amount"), F.lit(0)).cast(DecimalType(18, 2)).alias("claim_amount"),
-        F.coalesce(F.sum("settled_amount"), F.lit(0)).cast(DecimalType(18, 2)).alias("settled_amount"),
+        F.coalesce(F.sum("claimed_amount"), F.lit(0))
+        .cast(DecimalType(18, 2))
+        .alias("claim_amount"),
+        F.coalesce(F.sum("settled_amount"), F.lit(0))
+        .cast(DecimalType(18, 2))
+        .alias("settled_amount"),
     )
     joined = (
         policies.join(claim_totals, on="policy_id", how="left")
@@ -211,14 +225,13 @@ def aggregate_details(policies: Any, claims: Any, agents: Any) -> Any:
 
 def build_report_frame(details: Any) -> Any:
     """DETAIL + TOTAL rows, ordered, all columns rendered as strings (CSV-ready)."""
-    from pyspark.sql import functions as F  # noqa: PLC0415
-    from pyspark.sql.types import DecimalType  # noqa: PLC0415
+    from pyspark.sql import functions as F
+    from pyspark.sql.types import DecimalType
 
     premium = F.col("premium").cast(DecimalType(18, 2))
     claim_amount = F.col("claim_amount").cast(DecimalType(18, 2))
-    loss_ratio = (
-        F.when(premium == 0, F.lit("0.0000"))
-        .otherwise(F.round(claim_amount / premium, 4).cast(DecimalType(18, 4)).cast("string"))
+    loss_ratio = F.when(premium == 0, F.lit("0.0000")).otherwise(
+        F.round(claim_amount / premium, 4).cast(DecimalType(18, 4)).cast("string")
     )
 
     detail_rows = details.select(
@@ -242,17 +255,32 @@ def build_report_frame(details: Any) -> Any:
         loss_ratio.alias("loss_ratio_str"),
     )
 
-    totals = details.groupBy("agent_id").agg(
-        F.count("*").alias("policy_count"),
-        F.sum(F.col("premium").cast(DecimalType(18, 2))).cast(DecimalType(18, 2)).alias("premium"),
-        F.sum(F.col("commission").cast(DecimalType(18, 2))).cast(DecimalType(18, 2)).alias("commission"),
-        F.sum(F.col("claim_count")).cast("int").alias("claim_count"),
-        F.sum(F.col("claim_amount").cast(DecimalType(18, 2))).cast(DecimalType(18, 2)).alias("claim_amount"),
-        F.sum(F.col("settled_amount").cast(DecimalType(18, 2))).cast(DecimalType(18, 2)).alias("settled_amount"),
-    ).withColumn(
-        "loss_ratio",
-        F.when(F.col("premium") == 0, F.lit("0.0000"))
-        .otherwise(F.round(F.col("claim_amount") / F.col("premium"), 4).cast(DecimalType(18, 4)).cast("string")),
+    totals = (
+        details.groupBy("agent_id")
+        .agg(
+            F.count("*").alias("policy_count"),
+            F.sum(F.col("premium").cast(DecimalType(18, 2)))
+            .cast(DecimalType(18, 2))
+            .alias("premium"),
+            F.sum(F.col("commission").cast(DecimalType(18, 2)))
+            .cast(DecimalType(18, 2))
+            .alias("commission"),
+            F.sum(F.col("claim_count")).cast("int").alias("claim_count"),
+            F.sum(F.col("claim_amount").cast(DecimalType(18, 2)))
+            .cast(DecimalType(18, 2))
+            .alias("claim_amount"),
+            F.sum(F.col("settled_amount").cast(DecimalType(18, 2)))
+            .cast(DecimalType(18, 2))
+            .alias("settled_amount"),
+        )
+        .withColumn(
+            "loss_ratio",
+            F.when(F.col("premium") == 0, F.lit("0.0000")).otherwise(
+                F.round(F.col("claim_amount") / F.col("premium"), 4)
+                .cast(DecimalType(18, 4))
+                .cast("string")
+            ),
+        )
     )
 
     total_rows = totals.select(
@@ -300,7 +328,7 @@ def build_report_frame(details: Any) -> Any:
 
 def write_reports(frame: Any, reports_uri: str, report_date: str) -> str:
     """Write one CSV part per agent under ``reports/dt=<date>/agent_id=<id>/``."""
-    from pyspark.sql import functions as F  # noqa: PLC0415
+    from pyspark.sql import functions as F
 
     destination = f"{reports_uri.rstrip('/')}/reports/dt={report_date}"
     # Sort by (agent_id, ...) rather than (row_type_rank, ...): the partitioned writer requires its
@@ -325,7 +353,7 @@ def finalize_report_layout(spark: Any, reports_uri: str, report_date: str) -> li
     output byte-identical to the chunker's.
     """
     destination = f"{reports_uri.rstrip('/')}/reports/dt={report_date}"
-    jvm = spark.sparkContext._jvm  # noqa: SLF001 - the supported way to reach the Hadoop FS API
+    jvm = spark.sparkContext._jvm
     path_cls = jvm.org.apache.hadoop.fs.Path
     root = path_cls(destination)
     fs = root.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
@@ -389,7 +417,8 @@ def insert_agent_column(csv_text: str, agent_id: str) -> str:
 
 def _ordered(rows: list[dict[str, Any]], agent_id: str) -> list[dict[str, Any]]:
     detail = sorted(
-        (row for row in rows if row.get("row_type") == DETAIL), key=lambda row: str(row["policy_id"])
+        (row for row in rows if row.get("row_type") == DETAIL),
+        key=lambda row: str(row["policy_id"]),
     )
     totals = [row for row in rows if row.get("row_type") == TOTAL]
     unexpected = [row for row in rows if row.get("row_type") not in (DETAIL, TOTAL)]
@@ -460,7 +489,7 @@ def run_job(
 
 def _write_json(spark: Any, path: str, payload: dict[str, Any]) -> None:
     """Write a small JSON document through the Hadoop FS API (works on s3a and local FS)."""
-    jvm = spark.sparkContext._jvm  # noqa: SLF001
+    jvm = spark.sparkContext._jvm
     target = jvm.org.apache.hadoop.fs.Path(path)
     fs = target.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
     stream = fs.create(target, True)
@@ -472,11 +501,15 @@ def _write_json(spark: Any, path: str, payload: dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent_report_job", description=__doc__)
-    parser.add_argument("--raw-uri", required=True, help="raw zone URI (s3://bucket or file:///dir)")
+    parser.add_argument(
+        "--raw-uri", required=True, help="raw zone URI (s3://bucket or file:///dir)"
+    )
     parser.add_argument("--reports-uri", required=True, help="reports zone URI")
     parser.add_argument("--report-date", required=True, help="dt partition, YYYY-MM-DD")
     parser.add_argument("--master", default=None, help="spark master, e.g. local[2] (default: env)")
-    parser.add_argument("--no-summary", action="store_true", help="skip the _job_summary.json object")
+    parser.add_argument(
+        "--no-summary", action="store_true", help="skip the _job_summary.json object"
+    )
     return parser
 
 

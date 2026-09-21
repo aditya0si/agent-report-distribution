@@ -12,7 +12,7 @@ Nothing here runs at import time.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import boto3
 from botocore.config import Config
@@ -59,7 +59,9 @@ def client(
     existing = _CLIENTS.get(key)
     if existing is not None:
         return existing
-    created = boto3.client(
+    # boto3.client is overloaded per literal service name; this factory takes any service string.
+    factory = cast(Any, boto3.client)
+    created = factory(
         service,
         region_name=resolved_region,
         endpoint_url=resolved_endpoint or None,

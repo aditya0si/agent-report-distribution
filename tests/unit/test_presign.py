@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -67,16 +68,14 @@ def api_event(
     if caller is None:
         return event
     if via_claims:
-        event["requestContext"] = {
-            "authorizer": {"claims": {"sub": caller, "custom:role": role}}
-        }
+        event["requestContext"] = {"authorizer": {"claims": {"sub": caller, "custom:role": role}}}
     else:
         event["headers"] = {"X-Caller-Agent-Id": caller, "X-Caller-Role": role}
     return event
 
 
 def body(response: dict[str, object]) -> dict[str, object]:
-    return json.loads(str(response["body"]))
+    return cast(dict[str, object], json.loads(str(response["body"])))
 
 
 class TestAuthorization:
@@ -160,7 +159,9 @@ class TestHandler:
         assert response["statusCode"] == 403
         assert body(response)["error"] == "forbidden"
 
-    def test_anonymous_gets_401(self, handler_env: Settings, zones: Zones, report_object: str) -> None:
+    def test_anonymous_gets_401(
+        self, handler_env: Settings, zones: Zones, report_object: str
+    ) -> None:
         response = handler(api_event(caller=None))
         assert response["statusCode"] == 401
         assert body(response)["error"] == "unauthenticated"

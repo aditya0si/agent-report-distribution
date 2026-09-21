@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Mapping, Sequence
+from functools import partial
+from typing import Any, cast
 
 from ..common.aws import cloudwatch_client, sqs_client
 from ..common.errors import AgentReportsError
@@ -103,9 +105,7 @@ def plan_fanout(
     return targets, missing
 
 
-def build_message(
-    agent_id: str, report_date: str, roster_row: Mapping[str, str]
-) -> dict[str, Any]:
+def build_message(agent_id: str, report_date: str, roster_row: Mapping[str, str]) -> dict[str, Any]:
     """The SQS payload the dispatcher consumes."""
     return {
         "agent_id": agent_id,
@@ -119,6 +119,27 @@ def build_message(
 
 def _chunk(items: Sequence[str], size: int) -> list[list[str]]:
     return [list(items[index : index + size]) for index in range(0, len(items), size)]
+
+
+def _send_batch(sqs: Any, queue_url: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """One SendMessageBatch call (typed wrapper so the retry driver stays generic)."""
+    response = sqs.send_message_batch(QueueUrl=queue_url, Entries=entries)
+    return cast(dict[str, Any], response)
+
+
+def _send_single(
+    sqs: Any, queue_url: str, body: str, agent_id: str, report_date: str
+) -> dict[str, Any]:
+    """Send one message individually (used to retry entries SQS rejected in a batch)."""
+    response = sqs.send_message(
+        QueueUrl=queue_url,
+        MessageBody=body,
+        MessageAttributes={
+            "report_date": {"DataType": "String", "StringValue": report_date},
+            "agent_id": {"DataType": "String", "StringValue": agent_id},
+        },
+    )
+    return cast(dict[str, Any], response)
 
 
 def run_orchestrator(
@@ -174,7 +195,7 @@ def run_orchestrator(
         ]
         result.batches_sent += 1
         response = call_with_retry(
-            lambda: sqs.send_message_batch(QueueUrl=queue_url, Entries=entries),
+            partial(_send_batch, sqs, queue_url, entries),
             policy=BATCH_SEND_POLICY,
             operation="send_message_batch",
         )
@@ -186,31 +207,23 @@ def run_orchestrator(
             log_event(
                 _LOG,
                 "partial_batch_failure",
-                **{
-                    "report_date": report_date,
-                    "failed": [entry.get("Id") for entry in failed],
-                    "codes": sorted({str(entry.get("Code")) for entry in failed}),
-                    "level": 30,
-                },
+                level=30,
+                report_date=report_date,
+                failed=[entry.get("Id") for entry in failed],
+                codes=sorted({str(entry.get("Code")) for entry in failed}),
             )
             # Retry the individual messages SQS rejected (typically throttling on one shard).
             for entry in failed:
                 agent_id = str(entry.get("Id", ""))
-                body = next(
-                    (item["MessageBody"] for item in entries if item["Id"] == agent_id), None
+                retry_body = next(
+                    (str(item["MessageBody"]) for item in entries if str(item["Id"]) == agent_id),
+                    None,
                 )
-                if body is None:
+                if retry_body is None:
                     continue
                 try:
                     call_with_retry(
-                        lambda body=body, agent_id=agent_id: sqs.send_message(
-                            QueueUrl=queue_url,
-                            MessageBody=body,
-                            MessageAttributes={
-                                "report_date": {"DataType": "String", "StringValue": report_date},
-                                "agent_id": {"DataType": "String", "StringValue": agent_id},
-                            },
-                        ),
+                        partial(_send_single, sqs, queue_url, retry_body, agent_id, report_date),
                         policy=BATCH_SEND_POLICY,
                         operation="send_message",
                     )
@@ -219,7 +232,9 @@ def run_orchestrator(
                     log_event(
                         _LOG,
                         "message_enqueue_failed",
-                        **{"agent_id": agent_id, "level": 40, **exc.as_log_fields()},
+                        level=40,
+                        agent_id=agent_id,
+                        error=exc.as_log_fields(),
                     )
                     result.failed_agent_ids.append(agent_id)
 

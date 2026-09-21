@@ -38,7 +38,9 @@ class TestClaims:
         assert result.record.recipient == "agt-000001@example.com"
         assert result.record.lease_expires_at is not None
 
-    def test_second_claim_is_suppressed_while_the_lease_is_live(self, ledger: DispatchLedger) -> None:
+    def test_second_claim_is_suppressed_while_the_lease_is_live(
+        self, ledger: DispatchLedger
+    ) -> None:
         ledger.claim(DATE, AGENT, now=NOW)
         second = ledger.claim(DATE, AGENT, now=NOW + timedelta(seconds=5))
         assert second.claimed is False
@@ -120,7 +122,9 @@ class TestClaims:
 
 
 class TestStorage:
-    def test_marker_lives_at_the_documented_key(self, ledger: DispatchLedger, tmp_path: Path) -> None:
+    def test_marker_lives_at_the_documented_key(
+        self, ledger: DispatchLedger, tmp_path: Path
+    ) -> None:
         ledger.claim(DATE, AGENT, now=NOW)
         assert (
             tmp_path / "processed" / "state" / "dispatch" / f"dt={DATE}" / f"agent_id={AGENT}.json"
@@ -142,7 +146,12 @@ class TestStorage:
     def test_sent_agents_lists_only_delivered_reports(self, ledger: DispatchLedger) -> None:
         first = ledger.claim(DATE, AGENT, now=NOW)
         ledger.mark_sent(
-            DATE, AGENT, ses_message_id="s1", recipient="a@example.com", now=NOW, record=first.record
+            DATE,
+            AGENT,
+            ses_message_id="s1",
+            recipient="a@example.com",
+            now=NOW,
+            record=first.record,
         )
         ledger.claim(DATE, "AGT-000002", now=NOW)
         assert ledger.sent_agents(DATE) == [AGENT]
@@ -218,7 +227,9 @@ class TestConditionalCreate:
 
         from agent_reports.common.storage import S3Storage
 
-        store = S3Storage(boto3.client("s3", region_name="us-east-1"), bucket="agent-reports-processed")
+        store = S3Storage(
+            boto3.client("s3", region_name="us-east-1"), bucket="agent-reports-processed"
+        )
         ledger = DispatchLedger(store)
         first = ledger.claim(DATE, AGENT, now=NOW)
         assert first.claimed is True
@@ -232,7 +243,9 @@ class TestConditionalCreate:
 
         from agent_reports.common.storage import S3Storage
 
-        store = S3Storage(boto3.client("s3", region_name="us-east-1"), bucket="agent-reports-processed")
+        store = S3Storage(
+            boto3.client("s3", region_name="us-east-1"), bucket="agent-reports-processed"
+        )
         ledger = DispatchLedger(store)
         claim = ledger.claim(DATE, AGENT, now=NOW)
         ledger.mark_sent(

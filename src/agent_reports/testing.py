@@ -39,7 +39,9 @@ def ensure_bucket(s3: Any, bucket: str) -> None:
     s3.create_bucket(Bucket=bucket)
 
 
-def provision_local_resources(settings: Settings, *, verify_recipients: int = 200) -> dict[str, str]:
+def provision_local_resources(
+    settings: Settings, *, verify_recipients: int = 200
+) -> dict[str, str]:
     """Create the buckets, queues (with redrive), SES identities and configuration set.
 
     In real AWS this is ``terraform apply``; here it is the same shape so the offline path exercises
@@ -54,9 +56,7 @@ def provision_local_resources(settings: Settings, *, verify_recipients: int = 20
         ensure_bucket(s3, bucket)
 
     dlq_name = settings.dlq_url.rstrip("/").rsplit("/", 1)[-1] or "agent-reports-fanout-dlq"
-    main_name = (
-        settings.agent_queue_url.rstrip("/").rsplit("/", 1)[-1] or "agent-reports-fanout"
-    )
+    main_name = settings.agent_queue_url.rstrip("/").rsplit("/", 1)[-1] or "agent-reports-fanout"
     dlq_url = sqs.create_queue(
         QueueName=dlq_name,
         Attributes={"MessageRetentionPeriod": "1209600"},
@@ -64,15 +64,13 @@ def provision_local_resources(settings: Settings, *, verify_recipients: int = 20
     dlq_arn = sqs.get_queue_attributes(QueueUrl=dlq_url, AttributeNames=["QueueArn"])["Attributes"][
         "QueueArn"
     ]
-    import json  # noqa: PLC0415 - only needed for the redrive policy document
+    import json
 
     main_url = sqs.create_queue(
         QueueName=main_name,
         Attributes={
             "VisibilityTimeout": "60",
-            "RedrivePolicy": json.dumps(
-                {"deadLetterTargetArn": dlq_arn, "maxReceiveCount": "2"}
-            ),
+            "RedrivePolicy": json.dumps({"deadLetterTargetArn": dlq_arn, "maxReceiveCount": "2"}),
         },
     )["QueueUrl"]
 
@@ -91,9 +89,9 @@ def provision_local_resources(settings: Settings, *, verify_recipients: int = 20
 
 def sent_messages(region: str) -> list[Any]:
     """Every message moto's SES backend has accepted (the offline equivalent of the SES store)."""
-    from moto.ses.models import ses_backends  # noqa: PLC0415 - moto is test-only
+    from moto.ses.models import ses_backends
 
-    account = list(ses_backends.values())[0]
+    account = next(iter(ses_backends.values()))
     backend = account[region]
     return list(backend.sent_messages)
 
@@ -143,7 +141,7 @@ def verify_presigned_delivery(
 
 def fetch_url(url: str, *, timeout: int = 15) -> tuple[int, bytes]:
     """GET a pre-signed URL (moto intercepts it inside ``mock_aws``)."""
-    import requests  # noqa: PLC0415 - requests only exists for the local/offline path
+    import requests
 
     response = requests.get(url, timeout=timeout)
     return response.status_code, response.content

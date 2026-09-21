@@ -12,6 +12,7 @@ import csv
 import io
 import json
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -61,16 +62,20 @@ def drain_queue(aws: Settings, zones: Zones, *, max_batches: int = 20) -> dict[s
 
 
 @pytest.fixture
-def pipeline_run(aws: Settings, zones: Zones) -> tuple[Settings, Zones, dict[str, object]]:
+def pipeline_run(aws: Settings, zones: Zones) -> tuple[Settings, Zones, dict[str, Any]]:
     result = run_local_pipeline(
         aws,
-        PipelineOptions(report_date=REPORT_DATE, rows=1_200, seed=13, shards=2, dlq_wait_receives=1),
+        PipelineOptions(
+            report_date=REPORT_DATE, rows=1_200, seed=13, shards=2, dlq_wait_receives=1
+        ),
     )
     return aws, zones, result.as_dict()
 
 
 class TestEndToEnd:
-    def test_pipeline_invariants(self, pipeline_run: tuple[Settings, Zones, dict[str, object]]) -> None:
+    def test_pipeline_invariants(
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
+    ) -> None:
         _, _, result = pipeline_run
         assert result["rows_in"] >= 1_200
         assert result["agents_reported"] == result["reports_written"]
@@ -86,7 +91,7 @@ class TestEndToEnd:
         assert set(result["stages"]) == {"generate", "aggregate", "fanout", "dispatch"}
 
     def test_emf_metrics_cover_the_three_stages(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
         _, _, result = pipeline_run
         names = set(result["metric_names"])
@@ -95,7 +100,7 @@ class TestEndToEnd:
         assert "ReportAgeSeconds" in names
 
     def test_cloudwatch_received_the_datapoints(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
         aws, _, _ = pipeline_run
         metrics = cloudwatch_client(aws).list_metrics(Namespace="AgentReports")["Metrics"]
@@ -104,7 +109,7 @@ class TestEndToEnd:
         assert any(metric["Dimensions"] for metric in metrics)
 
     def test_ses_captured_exactly_one_message_per_agent(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
         aws, _, result = pipeline_run
         messages = sent_messages(aws.region)
@@ -116,9 +121,9 @@ class TestEndToEnd:
             assert str(message.subject).startswith(f"Agent report {REPORT_DATE}")
 
     def test_every_report_object_has_the_expected_shape(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
-        aws, zones, _ = pipeline_run
+        _, zones, _ = pipeline_run
         keys = [
             key
             for key in zones.reports.list_keys(f"reports/dt={REPORT_DATE}/")
@@ -134,9 +139,9 @@ class TestEndToEnd:
         assert totals.premium > 0
 
     def test_run_manifest_records_the_fanout(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
-        aws, zones, result = pipeline_run
+        _, zones, result = pipeline_run
         manifest = json.loads(zones.processed.get_bytes(manifest_key(REPORT_DATE)))
         assert manifest["report_date"] == REPORT_DATE
         assert manifest["agents_discovered"] == result["agents_discovered"]
@@ -145,9 +150,9 @@ class TestEndToEnd:
         assert manifest["failed_agent_ids"] == []
 
     def test_dispatch_markers_exist_for_every_delivery(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
-        aws, zones, result = pipeline_run
+        _, zones, result = pipeline_run
         markers = zones.processed.list_keys(f"state/dispatch/dt={REPORT_DATE}/")
         assert len(markers) == result["emails_sent"]
         record = json.loads(zones.processed.get_bytes(markers[0]))
@@ -156,7 +161,7 @@ class TestEndToEnd:
         assert record["attempts"] == 1
 
     def test_embedded_presigned_link_returns_the_report_object(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
         aws, zones, result = pipeline_run
         agent_id = str(result["sample_agent_id"])
@@ -175,7 +180,7 @@ class TestEndToEnd:
         assert "X-Amz-Signature" in delivery["url_query_keys"]
 
     def test_queue_is_empty_after_the_run(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
         aws, _, _ = pipeline_run
         assert queue_depth(sqs_client(aws), aws.agent_queue_url) == {
@@ -188,10 +193,10 @@ class TestEndToEnd:
 
 class TestReportCorrectness:
     def test_report_totals_match_an_independent_recomputation(
-        self, pipeline_run: tuple[Settings, Zones, dict[str, object]]
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
         """Recompute one agent's numbers straight from the raw partitions and compare."""
-        aws, zones, _ = pipeline_run
+        _, zones, _ = pipeline_run
         agent_id = report_agent_ids(zones.reports, REPORT_DATE)[0]
 
         policies: dict[str, dict[str, str]] = {}
@@ -250,9 +255,7 @@ class TestReplay:
         assert replay["batch_item_failures"] == 0
         assert len(sent_messages(aws.region)) == before
 
-    def test_quarantine_records_a_corrupt_message(
-        self, aws: Settings, zones: Zones
-    ) -> None:
+    def test_quarantine_records_a_corrupt_message(self, aws: Settings, zones: Zones) -> None:
         sqs = sqs_client(aws)
         sqs.send_message(QueueUrl=aws.agent_queue_url, MessageBody="{not-json")
         totals = drain_queue(aws, zones)
@@ -269,7 +272,9 @@ class TestPoisonMessage:
         self, aws: Settings, zones: Zones
     ) -> None:
         """A message whose report never appears is retried, then dead-lettered - not lost, not looped."""
-        run_local_pipeline(aws, PipelineOptions(report_date=REPORT_DATE, rows=300, seed=5, shards=1))
+        run_local_pipeline(
+            aws, PipelineOptions(report_date=REPORT_DATE, rows=300, seed=5, shards=1)
+        )
         sqs = sqs_client(aws)
         sqs.send_message(
             QueueUrl=aws.agent_queue_url,
@@ -334,7 +339,9 @@ class TestPoisonMessage:
                 "1000000.00,5000.00,0.2000,Active\n"
             ).encode(),
         )
-        run_chunker(aws, report_date=REPORT_DATE, agent_ids=[POISON_AGENT], zones=zones, emit_metrics=False)
+        run_chunker(
+            aws, report_date=REPORT_DATE, agent_ids=[POISON_AGENT], zones=zones, emit_metrics=False
+        )
         assert zones.reports.exists(report_key(REPORT_DATE, POISON_AGENT))
 
         dead = sqs.receive_message(QueueUrl=aws.dlq_url, MaxNumberOfMessages=1)["Messages"][0]
@@ -348,7 +355,9 @@ class TestPoisonMessage:
 
     def test_poison_message_body_is_never_mutated(self, aws: Settings, zones: Zones) -> None:
         sqs = sqs_client(aws)
-        original = json.dumps({"agent_id": POISON_AGENT, "report_date": REPORT_DATE, "recipient": "a@b.com"})
+        original = json.dumps(
+            {"agent_id": POISON_AGENT, "report_date": REPORT_DATE, "recipient": "a@b.com"}
+        )
         sqs.send_message(QueueUrl=aws.agent_queue_url, MessageBody=original)
         drain_queue(aws, zones)
         dead = sqs.receive_message(QueueUrl=aws.dlq_url, MaxNumberOfMessages=1)["Messages"][0]

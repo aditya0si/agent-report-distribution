@@ -127,7 +127,9 @@ class TestRender:
 
     def test_detail_row_rendering(self) -> None:
         details = sorted(DETAILS, key=lambda row: str(row["policy_id"]))
-        rows = list(csv.DictReader(io.StringIO(render_report_csv(details, summarize_details(details)))))
+        rows = list(
+            csv.DictReader(io.StringIO(render_report_csv(details, summarize_details(details))))
+        )
         first = rows[0]
         assert first["agent_id"] == "AGT-000001"
         assert first["policy_count"] == "1"
@@ -137,7 +139,7 @@ class TestRender:
 
     def test_total_row_rendering(self) -> None:
         text = render_report_csv(DETAILS, summarize_details(DETAILS))
-        total = [row for row in csv.DictReader(io.StringIO(text)) if row["row_type"] == TOTAL][0]
+        total = next(row for row in csv.DictReader(io.StringIO(text)) if row["row_type"] == TOTAL)
         assert total["premium"] == "20000.75"
         assert total["policy_count"] == "2"
         assert total["claim_count"] == "3"
@@ -169,9 +171,7 @@ class TestRender:
 
     def test_parse_requires_a_total_row(self) -> None:
         text = render_report_csv(DETAILS, summarize_details(DETAILS))
-        without_total = "\n".join(
-            line for line in text.splitlines() if not line.startswith(TOTAL)
-        )
+        without_total = "\n".join(line for line in text.splitlines() if not line.startswith(TOTAL))
         with pytest.raises(ValueError, match="no TOTAL row"):
             parse_report_totals(without_total)
 

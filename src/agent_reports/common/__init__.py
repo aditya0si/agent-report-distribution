@@ -26,10 +26,10 @@ from .idempotency import (
     DispatchRecord,
 )
 from .keys import (
-    report_key,
-    report_prefix_for,
     raw_key,
     raw_prefix,
+    report_key,
+    report_prefix_for,
     validate_agent_id,
     validate_report_date,
 )
@@ -79,10 +79,10 @@ __all__ = [
     "log_event",
     "open_store",
     "put_metric_data",
-    "report_key",
-    "report_prefix_for",
     "raw_key",
     "raw_prefix",
+    "report_key",
+    "report_prefix_for",
     "validate_agent_id",
     "validate_report_date",
 ]

@@ -8,21 +8,23 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from typing import Any
+from typing import Any, cast
 
-BASE = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{service}/current/us-east-1/index.json"
+BASE = (
+    "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{service}/current/us-east-1/index.json"
+)
 
 
 def fetch(service: str) -> dict[str, Any]:
     request = urllib.request.Request(BASE.format(service=service), headers={"User-Agent": "curl/8"})
     with urllib.request.urlopen(request, timeout=120) as response:
-        return json.load(response)
+        return cast(dict[str, Any], json.load(response))
 
 
 def walk(service: str, pattern: str, limit: int = 8, extra: str | None = None) -> list[str]:
     try:
         document = fetch(service)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return [f"{service}: FETCH FAILED {exc}"]
     products = document.get("products", {})
     terms = document.get("terms", {}).get("OnDemand", {})

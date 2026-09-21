@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from ..common.logging_utils import configure_logging, get_logger
 from ..common.settings import Settings
@@ -22,16 +22,24 @@ def build_parser() -> argparse.ArgumentParser:
         prog="agent-reports generate",
         description="Generate the synthetic agent/policy/claim dataset used by the pipeline.",
     )
-    parser.add_argument("--out", required=True, help="output URI: s3://bucket/prefix or a local dir")
+    parser.add_argument(
+        "--out", required=True, help="output URI: s3://bucket/prefix or a local dir"
+    )
     parser.add_argument("--report-date", required=True, help="dt partition, YYYY-MM-DD")
-    parser.add_argument("--rows", type=int, default=50_000, help="target total rows (>= 50000 for the demo)")
-    parser.add_argument("--agents", type=int, default=None, help="explicit agent count (overrides --rows)")
+    parser.add_argument(
+        "--rows", type=int, default=50_000, help="target total rows (>= 50000 for the demo)"
+    )
+    parser.add_argument(
+        "--agents", type=int, default=None, help="explicit agent count (overrides --rows)"
+    )
     parser.add_argument("--policies-per-agent", type=int, default=8)
     parser.add_argument("--claims-per-policy", type=float, default=0.6)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--partitions", type=int, default=4)
     parser.add_argument("--format", dest="extension", choices=("csv", "parquet"), default="csv")
-    parser.add_argument("--no-manifest", action="store_true", help="skip the dataset manifest object")
+    parser.add_argument(
+        "--no-manifest", action="store_true", help="skip the dataset manifest object"
+    )
     parser.add_argument("--quiet", action="store_true")
     return parser
 

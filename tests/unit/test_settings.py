@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from agent_reports.common.errors import ConfigError
-from agent_reports.common.settings import ENV_PREFIX, S3_MAX_PRESIGN_SECONDS, Settings, load_settings
+from agent_reports.common.settings import (
+    ENV_PREFIX,
+    S3_MAX_PRESIGN_SECONDS,
+    Settings,
+    load_settings,
+)
 
 
 class TestDefaultsAndEnv:
@@ -106,4 +111,4 @@ class TestZones:
         assert load_settings({f"{ENV_PREFIX}SES_SENDER": "broken"}, validate=False) is not None
 
     def test_redacted_exposes_every_field(self) -> None:
-        assert set(Settings().redacted()) == {field for field in Settings().__dataclass_fields__}
+        assert set(Settings().redacted()) == set(Settings().__dataclass_fields__)

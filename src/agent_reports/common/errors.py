@@ -7,7 +7,8 @@ the message is acknowledged so a poison payload cannot loop forever.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Mapping
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 import botocore.exceptions
 
@@ -80,9 +81,7 @@ class AgentReportsError(Exception):
     retryable: ClassVar[bool] = False
     code: ClassVar[str] = "AgentReportsError"
 
-    def __init__(
-        self, message: str, *, context: Mapping[str, Any] | None = None
-    ) -> None:
+    def __init__(self, message: str, *, context: Mapping[str, Any] | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.context: dict[str, Any] = dict(context or {})
@@ -194,7 +193,9 @@ def classify(exc: BaseException) -> AgentReportsError:
         if aws_code in PERMANENT_CODES:
             return PermanentError(f"AWS rejected the call: {aws_code}", context=context)
         if aws_code in RETRYABLE_CODES:
-            return DependencyError(f"AWS call failed with retryable code {aws_code}", context=context)
+            return DependencyError(
+                f"AWS call failed with retryable code {aws_code}", context=context
+            )
         if http_status is not None and http_status >= 500:
             return DependencyError(f"AWS call failed with HTTP {http_status}", context=context)
         if http_status == 429:

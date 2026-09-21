@@ -16,9 +16,10 @@ Event shape::
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from ..common.aggregation import RawAggregator
 from ..common.keys import report_key, validate_report_date
@@ -26,7 +27,7 @@ from ..common.logging_utils import configure_logging, get_logger, log_event
 from ..common.metrics import METRIC_NAMES, Metric, emit_emf, put_metric_data
 from ..common.roster import iter_source_rows, plan_shards, read_roster
 from ..common.settings import Settings, load_settings
-from ..common.storage import Storage, Zones, open_zones
+from ..common.storage import Zones, open_zones
 
 __all__ = ["ChunkerResult", "handler", "run_chunker"]
 
@@ -95,9 +96,7 @@ def run_chunker(
     else:
         planned = plan_shards(list(roster), shards=shard_count, index=shard_index)
 
-    aggregator = RawAggregator(
-        agent_ids=set(planned), max_policies=settings.chunker_max_policies
-    )
+    aggregator = RawAggregator(agent_ids=set(planned), max_policies=settings.chunker_max_policies)
     for row in iter_source_rows(active_zones.raw, report_date, "agents"):
         aggregator.add_agent_row(row)
     for row in iter_source_rows(active_zones.raw, report_date, "policies"):
@@ -130,7 +129,11 @@ def run_chunker(
     result.agents_reported = result.reports_written
     result.duration_seconds = time.perf_counter() - started
 
-    log_event(_LOG, "chunker_completed", **{k: v for k, v in result.as_dict().items() if k != "report_keys"})
+    log_event(
+        _LOG,
+        "chunker_completed",
+        **{k: v for k, v in result.as_dict().items() if k != "report_keys"},
+    )
 
     if emit_metrics:
         dimensions = {"Service": "chunker", "ReportDate": report_date}

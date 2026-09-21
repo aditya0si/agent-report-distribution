@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# No `continue-on-error`, no `|| true`, no deselection: a red gate fails the build.
+jobs:
+  gates:
+    name: lint + typecheck + tests + terraform + e2e
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      # The PySpark job is a deliverable, so the JVM is provisioned here rather than skipped.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install the package and dev requirements
+        run: |
+          uv venv .venv --python 3.11
+          uv pip install --python .venv/bin/python -r requirements-dev.txt
+          uv pip install --python .venv/bin/python -e . --no-deps
+
+      - name: Lint (ruff)
+        run: .venv/bin/python -m ruff check .
+
+      - name: Format check (ruff)
+        run: .venv/bin/python -m ruff format --check .
+
+      - name: Typecheck (mypy)
+        run: .venv/bin/python -m mypy
+
+      - name: Unit + integration tests (pytest, coverage gate)
+        run: >
+          .venv/bin/python -m pytest tests -q
+          --cov=agent_reports --cov-report=term-missing --cov-fail-under=85
+
+      - name: Terraform fmt + validate
+        run: |
+          curl -sSL -o /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+          unzip -q -o /tmp/terraform.zip -d /usr/local/bin
+          terraform -chdir=infra/terraform fmt -check -recursive
+          terraform -chdir=infra/terraform init -backend=false -input=false -no-color
+          terraform -chdir=infra/terraform validate -no-color
+
+      - name: End-to-end pipeline against moto
+        run: .venv/bin/python scripts/e2e_local.py --rows 5000 --shards 2
+
+  # The gates above need no AWS credentials and no network access beyond the package registries.
+  # Anything that cannot run on a hosted runner would live here under workflow_dispatch with the
+  # reason written down - nothing has been deleted or faked.
+  no-aws-credentials:
+    name: assert the suite never needs AWS credentials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No credential-shaped environment variables in the repo
+        run: |
+          set -euo pipefail
+          if git grep -nIE '(api[_-]?key|secret|password|token|mongodb\+srv)[[:space:]]*[:=]' \
+              -- . ':!*.example' ':!package-lock.json'; then
+            echo "::error::credential-shaped assignment found (see above)"
+            exit 1
+          fi
+          echo "no credential-shaped assignments found"

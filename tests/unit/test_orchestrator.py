@@ -21,9 +21,24 @@ from agent_reports.lambda_handlers.orchestrator import (
 
 REPORT_DATE = "2026-09-20"
 ROSTER = {
-    "AGT-000001": {"email": "agt-000001@example.com", "agent_name": "A One", "region": "North", "branch": "Delhi"},
-    "AGT-000002": {"email": "agt-000002@example.com", "agent_name": "B Two", "region": "South", "branch": "Kochi"},
-    "AGT-000003": {"email": "agt-000003@example.com", "agent_name": "C Three", "region": "East", "branch": "Patna"},
+    "AGT-000001": {
+        "email": "agt-000001@example.com",
+        "agent_name": "A One",
+        "region": "North",
+        "branch": "Delhi",
+    },
+    "AGT-000002": {
+        "email": "agt-000002@example.com",
+        "agent_name": "B Two",
+        "region": "South",
+        "branch": "Kochi",
+    },
+    "AGT-000003": {
+        "email": "agt-000003@example.com",
+        "agent_name": "C Three",
+        "region": "East",
+        "branch": "Patna",
+    },
 }
 
 
@@ -92,7 +107,9 @@ class _PartialFailSqs:
             ],
         }
 
-    def send_message(self, *, QueueUrl: str, MessageBody: str, MessageAttributes: Any) -> dict[str, Any]:
+    def send_message(
+        self, *, QueueUrl: str, MessageBody: str, MessageAttributes: Any
+    ) -> dict[str, Any]:
         assert QueueUrl == self.queue_url
         self.single_calls += 1
         payload = json.loads(MessageBody)
@@ -106,14 +123,30 @@ class _AlwaysFailSqs(_PartialFailSqs):
         return {
             "Successful": [],
             "Failed": [
-                {"Id": entry["Id"], "SenderFault": False, "Code": "RequestThrottled", "Message": "no"}
+                {
+                    "Id": entry["Id"],
+                    "SenderFault": False,
+                    "Code": "RequestThrottled",
+                    "Message": "no",
+                }
                 for entry in Entries
             ],
         }
 
-    def send_message(self, *, QueueUrl: str, MessageBody: str, MessageAttributes: Any) -> dict[str, Any]:
+    def send_message(
+        self, *, QueueUrl: str, MessageBody: str, MessageAttributes: Any
+    ) -> dict[str, Any]:
         raise ClientError(
-            {"Error": {"Code": "RequestThrottled", "Message": "nope"}, "ResponseMetadata": {"HTTPStatusCode": 429}},
+            {
+                "Error": {"Code": "RequestThrottled", "Message": "nope"},
+                "ResponseMetadata": {
+                    "HTTPStatusCode": 429,
+                    "RequestId": "req-1",
+                    "HostId": "host-1",
+                    "HTTPHeaders": {},
+                    "RetryAttempts": 0,
+                },
+            },
             "SendMessage",
         )
 
@@ -126,7 +159,9 @@ def reports_ready(aws: Settings, zones: Zones, small_dataset: dict[str, int]) ->
 
 
 class TestRunOrchestrator:
-    def test_fanout_enqueues_one_message_per_agent(self, aws: Settings, reports_ready: Zones) -> None:
+    def test_fanout_enqueues_one_message_per_agent(
+        self, aws: Settings, reports_ready: Zones
+    ) -> None:
         sqs = _PartialFailSqs(aws.agent_queue_url)
         result = run_orchestrator(
             aws, report_date=REPORT_DATE, zones=reports_ready, sqs=sqs, emit_metrics=False
@@ -139,14 +174,20 @@ class TestRunOrchestrator:
         assert sqs.single_calls == 1
         assert result.failed_agent_ids == []
 
-    def test_partial_batch_failure_is_retried_individually(self, aws: Settings, reports_ready: Zones) -> None:
+    def test_partial_batch_failure_is_retried_individually(
+        self, aws: Settings, reports_ready: Zones
+    ) -> None:
         sqs = _PartialFailSqs(aws.agent_queue_url)
-        run_orchestrator(aws, report_date=REPORT_DATE, zones=reports_ready, sqs=sqs, emit_metrics=False)
+        run_orchestrator(
+            aws, report_date=REPORT_DATE, zones=reports_ready, sqs=sqs, emit_metrics=False
+        )
         assert len(sqs.accepted) == len(set(sqs.accepted))
         assert sqs.batch_calls >= 1
         assert sqs.single_calls == 1
 
-    def test_hopeless_failures_are_recorded_not_dropped(self, aws: Settings, reports_ready: Zones) -> None:
+    def test_hopeless_failures_are_recorded_not_dropped(
+        self, aws: Settings, reports_ready: Zones
+    ) -> None:
         sqs = _AlwaysFailSqs(aws.agent_queue_url)
         result = run_orchestrator(
             aws, report_date=REPORT_DATE, zones=reports_ready, sqs=sqs, emit_metrics=False
@@ -167,7 +208,9 @@ class TestRunOrchestrator:
         assert manifest["settings"]["sqs_batch_size"] == aws.sqs_batch_size
         assert manifest["duration_seconds"] >= 0
 
-    def test_no_reports_means_no_targets(self, aws: Settings, zones: Zones, small_dataset: dict[str, int]) -> None:
+    def test_no_reports_means_no_targets(
+        self, aws: Settings, zones: Zones, small_dataset: dict[str, int]
+    ) -> None:
         sqs = _PartialFailSqs(aws.agent_queue_url)
         result = run_orchestrator(
             aws, report_date=REPORT_DATE, zones=zones, sqs=sqs, emit_metrics=False

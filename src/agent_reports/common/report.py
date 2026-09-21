@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 __all__ = [
     "DETAIL",
@@ -208,9 +209,7 @@ def parse_report_totals(csv_text: str) -> AgentTotals:
     """Read the TOTAL row back out of a rendered report (used by the dispatcher for email copy)."""
     reader = csv.DictReader(io.StringIO(csv_text))
     if reader.fieldnames is None or list(reader.fieldnames) != list(REPORT_COLUMNS):
-        raise ValueError(
-            f"unexpected report header: {reader.fieldnames!r}"
-        )
+        raise ValueError(f"unexpected report header: {reader.fieldnames!r}")
     for row in reader:
         if row.get("row_type") != TOTAL:
             continue

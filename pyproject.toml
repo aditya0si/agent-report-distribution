@@ -66,7 +66,7 @@ pretty = false
 exclude = "(^|/)build/"
 
 [[tool.mypy.overrides]]
-module = ["hcl2", "hcl2.*"]
+module = ["hcl2", "hcl2.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

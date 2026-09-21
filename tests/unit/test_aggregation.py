@@ -37,9 +37,24 @@ POLICY_B = {
     "commission_rate": "0.2000",
 }
 CLAIMS = [
-    {"policy_id": "POL-0000000001", "agent_id": "AGT-000001", "claimed_amount": "3000.00", "settled_amount": "2500.00"},
-    {"policy_id": "POL-0000000001", "agent_id": "AGT-000001", "claimed_amount": "1500.00", "settled_amount": "0.00"},
-    {"policy_id": "POL-0000000002", "agent_id": "AGT-000001", "claimed_amount": "1200.50", "settled_amount": "1000.00"},
+    {
+        "policy_id": "POL-0000000001",
+        "agent_id": "AGT-000001",
+        "claimed_amount": "3000.00",
+        "settled_amount": "2500.00",
+    },
+    {
+        "policy_id": "POL-0000000001",
+        "agent_id": "AGT-000001",
+        "claimed_amount": "1500.00",
+        "settled_amount": "0.00",
+    },
+    {
+        "policy_id": "POL-0000000002",
+        "agent_id": "AGT-000001",
+        "claimed_amount": "1200.50",
+        "settled_amount": "1000.00",
+    },
 ]
 
 
@@ -100,8 +115,13 @@ class TestAggregation:
     def test_iter_reports_is_sorted(self) -> None:
         aggregator = build()
         aggregator.add_agent_row({**AGENT, "agent_id": "AGT-000002"})
-        aggregator.add_policy_row({**POLICY_A, "policy_id": "POL-0000000009", "agent_id": "AGT-000002"})
-        assert [agent_id for agent_id, _ in aggregator.iter_reports()] == ["AGT-000001", "AGT-000002"]
+        aggregator.add_policy_row(
+            {**POLICY_A, "policy_id": "POL-0000000009", "agent_id": "AGT-000002"}
+        )
+        assert [agent_id for agent_id, _ in aggregator.iter_reports()] == [
+            "AGT-000001",
+            "AGT-000002",
+        ]
 
 
 class TestFilteringAndIdempotency:
@@ -119,7 +139,12 @@ class TestFilteringAndIdempotency:
         aggregator = build()
         assert (
             aggregator.add_claim_row(
-                {"policy_id": "POL-9999999999", "agent_id": "AGT-000001", "claimed_amount": "10.00", "settled_amount": "0.00"}
+                {
+                    "policy_id": "POL-9999999999",
+                    "agent_id": "AGT-000001",
+                    "claimed_amount": "10.00",
+                    "settled_amount": "0.00",
+                }
             )
             is False
         )

@@ -103,7 +103,9 @@ class TestStateKeys:
 
     def test_dispatch_marker_rejects_other_prefixes(self) -> None:
         assert keys.parse_dispatch_marker_key("state/runs/dt=2026-09-20/manifest.json") is None
-        assert keys.parse_dispatch_marker_key("state/dispatch/dt=2026-09-20/AGT-000042.json") is None
+        assert (
+            keys.parse_dispatch_marker_key("state/dispatch/dt=2026-09-20/AGT-000042.json") is None
+        )
 
     def test_sources_constant_matches_schema(self) -> None:
         from agent_reports.ingest.schema import SOURCE_COLUMNS

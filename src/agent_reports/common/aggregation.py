@@ -12,9 +12,10 @@ than letting a Lambda die at the memory limit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Iterator, Mapping
+from typing import Any
 
 from .errors import PermanentError
 from .report import AgentTotals, render_report_csv, summarize_details, to_decimal
@@ -44,7 +45,7 @@ class PolicyRow:
     claim_amount: Decimal = Decimal("0.00")
     settled_amount: Decimal = Decimal("0.00")
 
-    def as_detail(self, agent: Mapping[str, str]) -> dict[str, str]:
+    def as_detail(self, agent: Mapping[str, str]) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,
             "agent_name": agent.get("agent_name", ""),
@@ -171,7 +172,9 @@ class RawAggregator:
             raise ChunkerCapacityError(
                 "agent has no policies in this shard", context={"agent_id": agent_id}
             )
-        details = [self._policies[pid].as_detail(self._agents.get(agent_id, {})) for pid in policy_ids]
+        details = [
+            self._policies[pid].as_detail(self._agents.get(agent_id, {})) for pid in policy_ids
+        ]
         totals: AgentTotals = summarize_details(details)
         return render_report_csv(details, totals)
 

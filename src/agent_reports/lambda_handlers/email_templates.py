@@ -22,8 +22,8 @@ from string import Template
 from ..common.report import AgentTotals
 
 __all__ = [
-    "EmailContent",
     "TEMPLATE_FILES",
+    "EmailContent",
     "load_template",
     "render_email",
 ]
@@ -67,7 +67,6 @@ def render_email(
     now: datetime | None = None,
 ) -> EmailContent:
     """Render both bodies for one agent."""
-    moment = now or datetime.now(tz=UTC)
     if expires_at.tzinfo is None:
         raise ValueError("expires_at must be timezone-aware")
 

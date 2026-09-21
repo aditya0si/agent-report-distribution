@@ -69,12 +69,15 @@ def test_spark_job_writes_one_report_per_agent(spark: object, dataset: tuple[Pat
         assert files == ["report.csv"], agent_dir
 
     summary_path = out_root / "_job_summary.json"
-    assert json.loads(summary_path.read_text(encoding="utf-8"))["agents_reported"] == summary[
-        "agents_reported"
-    ]
+    assert (
+        json.loads(summary_path.read_text(encoding="utf-8"))["agents_reported"]
+        == summary["agents_reported"]
+    )
 
 
-def test_spark_output_rows_are_ordered_and_shaped(spark: object, dataset: tuple[Path, Zones]) -> None:
+def test_spark_output_rows_are_ordered_and_shaped(
+    spark: object, dataset: tuple[Path, Zones]
+) -> None:
     root, _ = dataset
     run_job(
         spark,
@@ -90,9 +93,7 @@ def test_spark_output_rows_are_ordered_and_shaped(spark: object, dataset: tuple[
     rows = list(reader)
     assert rows[0]["row_type"] == "DETAIL"
     assert rows[-1]["row_type"] == "TOTAL"
-    assert [row["policy_id"] for row in rows[:-1]] == sorted(
-        row["policy_id"] for row in rows[:-1]
-    )
+    assert [row["policy_id"] for row in rows[:-1]] == sorted(row["policy_id"] for row in rows[:-1])
     assert rows[-1]["policy_count"] == str(len(rows) - 1)
     assert rows[-1]["policy_id"] == ""
 
@@ -151,7 +152,7 @@ def test_spark_job_totals_match_the_raw_partitions(
 ) -> None:
     from decimal import Decimal
 
-    root, zones = dataset
+    root, _ = dataset
     run_job(
         spark,
         raw_uri=(root / "raw").as_uri(),
@@ -174,11 +175,11 @@ def test_spark_job_totals_match_the_raw_partitions(
     expected_premium = Decimal("0")
     expected_commission = Decimal("0")
     expected_insured = Decimal("0")
-    for policy_id, row in raw_policies.items():
+    for row in raw_policies.values():
         expected_premium += Decimal(row["premium"])
-        expected_commission += (
-            Decimal(row["premium"]) * Decimal(row["commission_rate"])
-        ).quantize(Decimal("0.01"))
+        expected_commission += (Decimal(row["premium"]) * Decimal(row["commission_rate"])).quantize(
+            Decimal("0.01")
+        )
         expected_insured += Decimal(row["sum_insured"])
 
     assert Decimal(total["premium"]) == expected_premium

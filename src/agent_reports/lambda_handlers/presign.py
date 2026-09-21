@@ -19,8 +19,9 @@ Response: 200 ``{"url", "expires_at", "expires_in", "agent_id", "report_date", "
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping
+from typing import Any
 
 from ..common.errors import AgentReportsError, AuthzDeniedError, InvalidMessageError
 from ..common.keys import report_key, validate_agent_id, validate_report_date
@@ -29,7 +30,7 @@ from ..common.metrics import METRIC_NAMES, Metric, emit_emf
 from ..common.settings import Settings, load_settings
 from ..common.storage import Zones, open_zones
 
-__all__ = ["PRIVILEGED_ROLES", "handler", "authorize", "caller_identity", "presign_report"]
+__all__ = ["PRIVILEGED_ROLES", "authorize", "caller_identity", "handler", "presign_report"]
 
 _LOG = get_logger(__name__)
 

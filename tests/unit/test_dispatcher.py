@@ -94,10 +94,22 @@ class TestParseMessage:
             ("[]", "must be a JSON object"),
             ('{"agent_id":"AGT-000001"}', "missing required fields"),
             ('{"agent_id":"AGT-1","report_date":"2026-09-20","recipient":"a@b.com"}', "malformed"),
-            ('{"agent_id":"AGT-000001","report_date":"2026-9-2","recipient":"a@b.com"}', "malformed"),
-            ('{"agent_id":"AGT-000001","report_date":"2026-09-20","recipient":"nope"}', "not an email"),
-            ('{"agent_id":"AGT-000001","report_date":"2026-09-20","recipient":"@b.com"}', "not an email"),
-            ('{"agent_id":"AGT-000001","report_date":"2026-09-20","recipient":"a@"}', "not an email"),
+            (
+                '{"agent_id":"AGT-000001","report_date":"2026-9-2","recipient":"a@b.com"}',
+                "malformed",
+            ),
+            (
+                '{"agent_id":"AGT-000001","report_date":"2026-09-20","recipient":"nope"}',
+                "not an email",
+            ),
+            (
+                '{"agent_id":"AGT-000001","report_date":"2026-09-20","recipient":"@b.com"}',
+                "not an email",
+            ),
+            (
+                '{"agent_id":"AGT-000001","report_date":"2026-09-20","recipient":"a@"}',
+                "not an email",
+            ),
         ],
     )
     def test_invalid_payloads(self, body: str, match: str) -> None:
@@ -168,8 +180,12 @@ class TestDispatchBatch:
 
     def test_a_second_delivery_is_suppressed(self, aws: Settings, zones: Zones) -> None:
         write_report(zones)
-        first = run_dispatcher(aws, records=[sqs_record(PAYLOAD, "m1")], zones=zones, emit_metrics=False)
-        second = run_dispatcher(aws, records=[sqs_record(PAYLOAD, "m2")], zones=zones, emit_metrics=False)
+        first = run_dispatcher(
+            aws, records=[sqs_record(PAYLOAD, "m1")], zones=zones, emit_metrics=False
+        )
+        second = run_dispatcher(
+            aws, records=[sqs_record(PAYLOAD, "m2")], zones=zones, emit_metrics=False
+        )
         assert first.sent == 1
         assert second.sent == 0
         assert second.duplicates == 1
@@ -188,7 +204,9 @@ class TestDispatchBatch:
         assert result.outcomes[0].error_code == "MissingReportError"
         assert result.outcomes[0].retryable is True
 
-    def test_invalid_payload_is_quarantined_and_acknowledged(self, aws: Settings, zones: Zones) -> None:
+    def test_invalid_payload_is_quarantined_and_acknowledged(
+        self, aws: Settings, zones: Zones
+    ) -> None:
         write_report(zones)
         result = run_dispatcher(
             aws,
@@ -209,8 +227,17 @@ class TestDispatchBatch:
             def send_email(self, **kwargs: Any) -> dict[str, Any]:
                 raise ClientError(
                     {
-                        "Error": {"Code": "MessageRejected", "Message": "Email address not verified"},
-                        "ResponseMetadata": {"HTTPStatusCode": 400},
+                        "Error": {
+                            "Code": "MessageRejected",
+                            "Message": "Email address not verified",
+                        },
+                        "ResponseMetadata": {
+                            "HTTPStatusCode": 400,
+                            "RequestId": "req-1",
+                            "HostId": "host-1",
+                            "HTTPHeaders": {},
+                            "RetryAttempts": 0,
+                        },
                     },
                     "SendEmail",
                 )
@@ -237,7 +264,13 @@ class TestDispatchBatch:
                     raise ClientError(
                         {
                             "Error": {"Code": "Throttling", "Message": "slow down"},
-                            "ResponseMetadata": {"HTTPStatusCode": 429},
+                            "ResponseMetadata": {
+                                "HTTPStatusCode": 429,
+                                "RequestId": "req-1",
+                                "HostId": "host-1",
+                                "HTTPHeaders": {},
+                                "RetryAttempts": 0,
+                            },
                         },
                         "SendEmail",
                     )
@@ -250,7 +283,9 @@ class TestDispatchBatch:
         assert result.sent == 1
         assert result.outcomes[0].ses_message_id == "ses-3"
 
-    def test_persistent_throttling_becomes_a_batch_failure(self, aws: Settings, zones: Zones) -> None:
+    def test_persistent_throttling_becomes_a_batch_failure(
+        self, aws: Settings, zones: Zones
+    ) -> None:
         write_report(zones)
 
         class AlwaysThrottled:
@@ -258,13 +293,23 @@ class TestDispatchBatch:
                 raise ClientError(
                     {
                         "Error": {"Code": "Throttling", "Message": "slow down"},
-                        "ResponseMetadata": {"HTTPStatusCode": 429},
+                        "ResponseMetadata": {
+                            "HTTPStatusCode": 429,
+                            "RequestId": "req-1",
+                            "HostId": "host-1",
+                            "HTTPHeaders": {},
+                            "RetryAttempts": 0,
+                        },
                     },
                     "SendEmail",
                 )
 
         result = run_dispatcher(
-            aws, records=[sqs_record(PAYLOAD)], zones=zones, ses=AlwaysThrottled(), emit_metrics=False
+            aws,
+            records=[sqs_record(PAYLOAD)],
+            zones=zones,
+            ses=AlwaysThrottled(),
+            emit_metrics=False,
         )
         assert result.failed == 1
         assert result.batch_item_failures == ["msg-1"]
@@ -274,7 +319,10 @@ class TestDispatchBatch:
         write_report(zones)
         records = [
             sqs_record(PAYLOAD, "m-ok"),
-            sqs_record({**PAYLOAD, "agent_id": "AGT-000002", "recipient": "agt-000002@example.com"}, "m-missing"),
+            sqs_record(
+                {**PAYLOAD, "agent_id": "AGT-000002", "recipient": "agt-000002@example.com"},
+                "m-missing",
+            ),
             sqs_record("garbage", "m-bad"),
         ]
         result = run_dispatcher(aws, records=records, zones=zones, emit_metrics=False)
@@ -322,5 +370,7 @@ class TestDispatchBatch:
     def test_ledger_is_reused_across_batches(self, aws: Settings, zones: Zones) -> None:
         write_report(zones)
         ledger = DispatchLedger(zones.processed)
-        run_dispatcher(aws, records=[sqs_record(PAYLOAD, "m1")], zones=zones, ledger=ledger, emit_metrics=False)
+        run_dispatcher(
+            aws, records=[sqs_record(PAYLOAD, "m1")], zones=zones, ledger=ledger, emit_metrics=False
+        )
         assert ledger.sent_agents(REPORT_DATE) == [AGENT]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import io
 from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
@@ -35,9 +34,7 @@ def source_part_keys(storage: Storage, report_date: str, source: str) -> list[st
     return sorted(keys)
 
 
-def iter_source_rows(
-    storage: Storage, report_date: str, source: str
-) -> Iterator[dict[str, str]]:
+def iter_source_rows(storage: Storage, report_date: str, source: str) -> Iterator[dict[str, str]]:
     """Stream one source's rows (header-aware, file by file, never whole-file in memory)."""
     for key in source_part_keys(storage, report_date, source):
         if key.endswith(".parquet"):
@@ -116,7 +113,7 @@ def _chained(header_line: str, lines: Iterable[str]) -> Iterator[str]:
 
 def _iter_parquet_rows(storage: Storage, key: str) -> Iterator[dict[str, str]]:
     try:
-        import pyarrow.parquet as pq  # noqa: PLC0415 - optional dependency
+        import pyarrow.parquet as pq
     except ImportError as exc:  # pragma: no cover - pyarrow is a declared dev/spark dependency
         raise RuntimeError("reading parquet requires pyarrow") from exc
 

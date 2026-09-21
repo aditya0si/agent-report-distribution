@@ -23,6 +23,8 @@ data/
 out/
 *.log
 logs/
+.coverage.json
+coverage.json
 
 # Secrets / env
 .env
@@ -44,5 +46,5 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
-# Local JVM/toolchain drops (installed outside the repo, listed for safety)
-tools/
+# Local task contract (not part of the deliverable; kept out of the published repo)
+SPEC.md

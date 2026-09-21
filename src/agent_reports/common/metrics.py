@@ -13,9 +13,10 @@ Metric names used across the pipeline live in :data:`METRIC_NAMES` so dashboards
 from __future__ import annotations
 
 import json  # noqa: F401 - kept for JSON round-trip helpers used by callers
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from .logging_utils import get_logger, log_emf
 
@@ -87,9 +88,7 @@ def emf_document(
                 {
                     "Namespace": namespace,
                     "Dimensions": [list(dimensions.keys())],
-                    "Metrics": [
-                        {"Name": metric.name, "Unit": metric.unit} for metric in metrics
-                    ],
+                    "Metrics": [{"Name": metric.name, "Unit": metric.unit} for metric in metrics],
                 }
             ],
         }
@@ -146,9 +145,7 @@ def put_metric_data(
                 "MetricName": metric.name,
                 "Value": float(metric.value),
                 "Unit": metric.unit,
-                "Dimensions": [
-                    {"Name": key, "Value": value} for key, value in dimensions.items()
-                ],
+                "Dimensions": [{"Name": key, "Value": value} for key, value in dimensions.items()],
             }
             for metric in metric_list
         ],
