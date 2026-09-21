@@ -266,6 +266,23 @@ class TestReplay:
         assert record["error_code"] == "InvalidMessageError"
         assert record["body"] == "{not-json"
 
+    def test_quarantine_date_comes_from_the_message_attribute(
+        self, aws: Settings, zones: Zones
+    ) -> None:
+        """The whole path, not just the helper: SQS attribute -> event record -> quarantine key."""
+        sqs = sqs_client(aws)
+        sqs.send_message(
+            QueueUrl=aws.agent_queue_url,
+            MessageBody="{still-not-json",
+            MessageAttributes={
+                "report_date": {"DataType": "String", "StringValue": "2026-08-01"},
+            },
+        )
+        records = receive_records(sqs, aws.agent_queue_url)
+        assert records[0]["messageAttributes"]["report_date"]["stringValue"] == "2026-08-01"
+        run_dispatcher(aws, records=records, zones=zones, emit_metrics=False)
+        assert zones.processed.list_keys("state/quarantine/dt=2026-08-01/")
+
 
 class TestPoisonMessage:
     def test_poison_message_lands_in_the_dlq_after_max_receives(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,9 +47,22 @@ class PipelineOptions:
     partitions: int = 4
     shards: int = 1
     agents: int | None = None
-    max_dispatch_batches: int = 200
+    max_dispatch_batches: int = 0
     visibility_timeout: int = 0
     dlq_wait_receives: int = 0
+
+    def dispatch_batch_budget(self, messages_enqueued: int, batch_size: int) -> int:
+        """How many receive/dispatch rounds to allow.
+
+        ``max_dispatch_batches`` is a runaway guard, not a work limit: if it were fixed, a large day
+        would silently stop part-way through and leave the queue half-full (which is exactly what
+        happened the first time this was run at 50k rows). So the budget is derived from the fan-out
+        size, with headroom for redeliveries, unless the caller sets an explicit cap.
+        """
+        if self.max_dispatch_batches:
+            return self.max_dispatch_batches
+        per_batch = max(1, batch_size)
+        return (messages_enqueued // per_batch) * 3 + 50
 
     def dataset_config(self) -> DatasetConfig:
         if self.agents is not None:
@@ -147,12 +161,38 @@ def receive_records(
                 "receiptHandle": str(message.get("ReceiptHandle", "")),
                 "body": str(message.get("Body", "")),
                 "attributes": dict(message.get("Attributes", {})),
-                "messageAttributes": dict(message.get("MessageAttributes", {})),
+                "messageAttributes": _event_message_attributes(
+                    message.get("MessageAttributes", {})
+                ),
                 "eventSource": "aws:sqs",
-                "awsRegion": message.get("Attributes", {}).get("SenderId", ""),
+                "awsRegion": str(message.get("Attributes", {}).get("SenderId", "")),
             }
         )
     return records
+
+
+def _event_message_attributes(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Convert boto3's PascalCase message attributes to the event source mapping's camelCase shape.
+
+    The Lambda SQS event uses ``{"stringValue": ..., "dataType": ...}`` while the SQS API returns
+    ``{"StringValue": ..., "DataType": ...}``. Skipping this conversion is a real bug, not a cosmetic
+    one: the dispatcher reads ``stringValue`` when it has to quarantine an unparseable message.
+    """
+    converted: dict[str, dict[str, Any]] = {}
+    for name, value in raw.items():
+        if not isinstance(value, Mapping):
+            continue
+        entry: dict[str, Any] = {"dataType": str(value.get("DataType", "String"))}
+        if "StringValue" in value:
+            entry["stringValue"] = str(value["StringValue"])
+        if "BinaryValue" in value:
+            entry["binaryValue"] = value["BinaryValue"]
+        if "StringListValues" in value:
+            entry["stringListValues"] = [str(item) for item in value["StringListValues"]]
+        if "BinaryListValues" in value:
+            entry["binaryListValues"] = list(value["BinaryListValues"])
+        converted[str(name)] = entry
+    return converted
 
 
 def queue_depth(sqs: Any, queue_url: str) -> dict[str, int]:
@@ -308,7 +348,8 @@ def run_local_pipeline(
 
         stage_started = time.perf_counter()
         batches = 0
-        while batches < options.max_dispatch_batches:
+        budget = options.dispatch_batch_budget(result.messages_enqueued, settings.sqs_batch_size)
+        while batches < budget:
             records = receive_records(
                 active_sqs,
                 queue_url,

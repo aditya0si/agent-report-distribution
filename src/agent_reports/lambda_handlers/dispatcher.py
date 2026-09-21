@@ -464,17 +464,30 @@ def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
 
 
 def _quarantine_date(record: Mapping[str, Any], body: str, settings: Settings) -> str:
-    """Best-effort date partition for a message we could not parse."""
+    """Best-effort date partition for a message we could not parse.
+
+    Tries the message attributes first, then the body, then falls back to the configured run date:
+    a quarantined message must always land somewhere a human can find it, even when every field in
+    it is garbage.
+    """
     attributes = record.get("messageAttributes") or {}
     for source in (attributes.get("report_date", {}), attributes.get("ReportDate", {})):
         value = source.get("stringValue") if isinstance(source, Mapping) else None
         if isinstance(value, str) and len(value) == 10:
             return value
+    candidate = _report_date_from_body(body)
+    if candidate is not None:
+        return candidate
+    return settings.report_date or datetime.now(tz=UTC).date().isoformat()
+
+
+def _report_date_from_body(body: str) -> str | None:
+    """``report_date`` out of a body we already know is unparseable, when it happens to be readable."""
     try:
         parsed = json.loads(body)
-        candidate = str(parsed.get("report_date", ""))
-        if len(candidate) == 10:
-            return candidate
     except (TypeError, ValueError):
-        pass
-    return settings.report_date or datetime.now(tz=UTC).date().isoformat()
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    candidate = str(parsed.get("report_date", ""))
+    return candidate if len(candidate) == 10 else None

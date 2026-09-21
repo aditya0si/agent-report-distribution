@@ -138,8 +138,8 @@ and the e2e output, are in [VERIFY.md](VERIFY.md).
 
 | Measurement | Result | Command |
 | --- | --- | --- |
-| Test suite | 316 passed, 0 failed, 0 skipped | `pytest tests -q` |
-| Coverage of `agent_reports` | 92% statements, 92% branches (140 of 2,356 statements missed) | `pytest tests --cov=agent_reports` |
+| Test suite | 333 passed, 0 failed, 0 skipped | `pytest tests -q` |
+| Coverage of `agent_reports` | 92% statements, 92% branches (136 of 2,384 statements missed) | `pytest tests --cov=agent_reports` |
 | Lint / format / types | ruff clean, `ruff format --check` clean, mypy 0 errors | `make lint typecheck` |
 | Terraform | `fmt -check` and `validate` clean (root module + EMR module) | `make tf-validate` |
 | Dataset generation | 52,471 rows in 0.83 s (38% headroom over the 50k target) | `agent-reports generate --rows 50000` |

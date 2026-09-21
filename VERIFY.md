@@ -60,9 +60,11 @@ neither ships stubs, and both are listed explicitly in `pyproject.toml`.
 
 ```console
 $ .venv/Scripts/python.exe -m pytest tests -q --cov=agent_reports --cov-report=term-missing
-........................................................................ [ 68%]
-........................................................................ [ 91%]
-............................                                             [100%]
+........................................................................ [ 21%]
+........................................................................ [ 43%]
+........................................................................ [ 64%]
+........................................................................ [ 86%]
+.........................................                                [100%]
 =============================== tests coverage ================================
 ______________ coverage: platform win32, python 3.11.16-final-0 _______________
 
@@ -91,19 +93,18 @@ src\agent_reports\ingest\generator.py                    206      8     46      
 src\agent_reports\ingest\schema.py                        31      0      0      0   100%
 src\agent_reports\lambda_handlers\__init__.py              2      0      0      0   100%
 src\agent_reports\lambda_handlers\chunker.py              80     11     16      2    86%   89, 148->158, 163-183
-src\agent_reports\lambda_handlers\dispatcher.py          196      6     34      2    96%   82, 110, 406->408, 472, 475-477
+src\agent_reports\lambda_handlers\dispatcher.py          201      2     36      1    99%   82, 110, 406->408
 src\agent_reports\lambda_handlers\email_templates.py      34      0     10      0   100%
 src\agent_reports\lambda_handlers\orchestrator.py        115      1     22      2    98%   223, 267->277
 src\agent_reports\lambda_handlers\presign.py              72      0     10      0   100%
-src\agent_reports\pipeline.py                            190      4     42      9    94%   55, 208->exit, 311->338, 336, 344->351, 347, 360->364, 371->369, 373
+src\agent_reports\pipeline.py                            213      4     56      9    95%   193, 248->exit, 352->379, 377, 385->392, 388, 401->405, 412->410, 414
 src\agent_reports\testing.py                              65      8     14      4    82%   34, 38, 80-82, 113, 118, 124
 --------------------------------------------------------------------------------------------------
-TOTAL                                                   2356    140    556     65    92%
-Coverage JSON written to file .coverage.json
-316 passed in 152.46s (0:02:32)
+TOTAL                                                   2384    136    572     64    92%
+333 passed in 211.93s (0:03:31)
 ```
 
-**316 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 316 (they are marked
+**333 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 333 (they are marked
 `requires_jvm` but a JVM is present, so they ran — the suite would have printed a loud banner and
 reported them as skipped otherwise).
 
@@ -124,6 +125,7 @@ Real assertion counts by area, from the same run:
 | `tests/unit/test_orchestrator.py` | fan-out planning, partial batch failure + individual retry, manifest contents |
 | `tests/unit/test_dispatcher.py` | payload validation, quarantine, duplicate suppression, SES throttle retry, permanent rejection, mixed batch partitioning, oversized report fallback |
 | `tests/unit/test_spark_shaping.py` | partition-column re-insertion, row ordering, malformed Spark output rejection |
+| `tests/unit/test_pipeline.py` | dispatch batch budgeting, SQS→event record shaping, queue depth, date validation |
 | `tests/unit/test_terraform_config.py` | lifecycle policies, redrive, IAM least privilege (no `*` actions), alarms, metric filters, schedules, EMR module |
 | `tests/integration/test_pipeline_end_to_end.py` | full moto run, independent recomputation of one agent's totals, replay idempotency, quarantine, poison → DLQ → redrive |
 | `tests/integration/test_spark_job.py` | real `local[2]` Spark run, output layout, totals vs raw partitions, **byte-identical to the chunker** |
@@ -247,6 +249,8 @@ Recorded because they are the honest measure of whether the tests do anything:
 | Spark: `sum_insured` copied from `premium` | Spark/chunker byte comparison | select the right column |
 | Spark: commission rounded HALF_EVEN in the chunker, HALF_UP in Spark | Spark/chunker byte comparison | explicit `ROUND_HALF_UP` |
 | Spark: DETAIL rows not sorted by `policy_id` | Spark/chunker byte comparison | finaliser enforces the row order |
+| e2e at 50k rows stopped after 2,000 of 3,805 emails, queue half-full | the 50k e2e run (it failed loudly) | the dispatch batch budget is derived from the fan-out size instead of a fixed 200 |
+| quarantine date ignored the SQS message attribute (PascalCase vs camelCase) | unit test on `receive_records` | records are converted to the event source mapping's shape |
 
 ## Reproduce all of it
 
@@ -311,4 +315,5 @@ Honest list of what did **not** run here:
    parse the files but would not have caught provider-level errors.
 10. **Coverage gaps below 85%** in `roster.py` (68%), `storage.py` (82%) and `testing.py` (82%) —
     mostly Parquet and S3-error branches and the moto-only verification helpers. Reported as-is
-    rather than excluded from the report.
+    rather than excluded from the report. `dispatcher.py` (99%), `pipeline.py` (95%) and
+    `orchestrator.py` (98%) are the parts a reviewer should look at first.

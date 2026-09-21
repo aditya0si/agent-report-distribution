@@ -82,3 +82,19 @@ Appended after each milestone. Newest entries at the bottom.
 - Tooling installed outside the repo for the gates: Temurin 21 JRE, Terraform 1.9.8, Hadoop
   winutils/hadoop.dll, GNU Make 3.81.
 
+## 2026-09-21 - Milestone 7: full-size e2e run, two more real bugs, final gates
+
+- Ran the e2e at the full demo size (`--rows 50000 --shards 4`, 52,471 rows / 3,805 agents). It
+  **failed loudly**, which is exactly what it is for:
+  1. the dispatch loop stopped after 2,000 of 3,805 emails because `max_dispatch_batches` was a fixed
+     200 (200 batches x 10 messages); the budget is now derived from the fan-out size;
+  2. `receive_records` passed SQS's PascalCase message attributes straight through, so the
+     dispatcher's quarantine-date fallback (`stringValue`) never matched — records are now converted
+     to the event source mapping's camelCase shape, with a test that goes through the real receive
+     path.
+- Moved the EMR module to `infra/emr/` (the path the spec names) and referenced it as `../emr` from
+  the Terraform root; `fmt -check` + `validate` still clean.
+- Final gate results: ruff clean, `ruff format --check` clean, mypy 0 errors (49 files), **333 tests
+  green, 92% coverage**, terraform validate clean, secret grep empty, e2e green at 5,000 rows and at
+  50,000 rows (see VERIFY.md for the transcripts).
+

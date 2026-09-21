@@ -1,5 +1,6 @@
 module "emr_serverless" {
-  source = "./modules/emr"
+  # Lives at infra/emr (the EMR module named in the spec), referenced from the Terraform root.
+  source = "../emr"
   count  = var.enable_emr_module ? 1 : 0
 
   name_prefix    = var.name_prefix

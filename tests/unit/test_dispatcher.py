@@ -152,6 +152,40 @@ class TestQuarantine:
         assert first == second
 
 
+class TestQuarantineDatePartition:
+    """A quarantined message must always land somewhere findable, whatever is wrong with it."""
+
+    def test_date_taken_from_the_message_attributes(self, aws: Settings, zones: Zones) -> None:
+        record = sqs_record("garbage", "m1")
+        record["messageAttributes"] = {"report_date": {"stringValue": "2026-09-01"}}
+        run_dispatcher(aws, records=[record], zones=zones, emit_metrics=False)
+        assert zones.processed.list_keys("state/quarantine/dt=2026-09-01/")
+
+    def test_date_taken_from_the_body_when_attributes_are_absent(
+        self, aws: Settings, zones: Zones
+    ) -> None:
+        run_dispatcher(
+            aws,
+            records=[sqs_record('{"report_date":"2026-08-15","recipient":"x"}', "m2")],
+            zones=zones,
+            emit_metrics=False,
+        )
+        assert zones.processed.list_keys("state/quarantine/dt=2026-08-15/")
+
+    def test_falls_back_to_the_configured_run_date(self, aws: Settings, zones: Zones) -> None:
+        run_dispatcher(
+            aws, records=[sqs_record("not json at all", "m3")], zones=zones, emit_metrics=False
+        )
+        assert zones.processed.list_keys(f"state/quarantine/dt={REPORT_DATE}/")
+
+    def test_non_object_json_body_is_quarantined(self, aws: Settings, zones: Zones) -> None:
+        result = run_dispatcher(
+            aws, records=[sqs_record("[1, 2, 3]", "m4")], zones=zones, emit_metrics=False
+        )
+        assert result.quarantined == 1
+        assert result.batch_item_failures == []
+
+
 class TestDispatchBatch:
     def test_happy_path_sends_one_email_and_marks_the_ledger(
         self, aws: Settings, zones: Zones

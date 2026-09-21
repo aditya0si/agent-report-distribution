@@ -64,6 +64,11 @@ def normalise_key(key: Any) -> str:
     return text
 
 
+def emr_module_path() -> Path:
+    """The EMR module lives at ``infra/emr`` and is referenced as ``../emr`` from the TF root."""
+    return TF_DIR.parent / "emr" / "main.tf"
+
+
 def load(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], normalise(hcl2.loads(path.read_text(encoding="utf-8"))))
 
@@ -114,7 +119,7 @@ def stack() -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def emr_module() -> dict[str, Any]:
-    return load(TF_DIR / "modules" / "emr" / "main.tf")
+    return load(emr_module_path())
 
 
 def resources(stack: dict[str, Any], kind: str) -> dict[str, Any]:
@@ -366,6 +371,8 @@ class TestEmrModule:
         assert variables(stack)["enable_emr_module"]["default"] is False
         module = block(load(TF_DIR / "emr.tf"), "module")["emr_serverless"]
         assert module["count"] == "var.enable_emr_module ? 1 : 0"
+        assert module["source"] == "../emr"
+        assert emr_module_path().exists()
 
     def test_application_is_spark_with_a_capacity_ceiling(self, emr_module: dict[str, Any]) -> None:
         application = group(emr_module, "resource")["aws_emrserverless_application"]["spark"]
