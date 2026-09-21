@@ -6,3 +6,6 @@ boto3-stubs[s3,sqs,ses,cloudwatch,logs,emr,emr-serverless,lambda]>=1.35
 ruff>=0.8
 mypy>=1.14
 python-hcl2>=7.0
+# The parquet round-trip test and the roster's parquet reader need the engine, and this is the file CI
+# installs from. Without it here the parquet test silently skipped on CI instead of testing the writer.
+pyarrow>=17

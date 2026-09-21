@@ -105,17 +105,30 @@ TOTAL                                                   2527    151    622     7
 389 passed in 508.44s (0:08:28)
 ```
 
-**389 passed, 0 failed, 0 skipped, 0 errors.** The Spark tests are part of that 389 (they are marked
+**389 passed, 0 failed, 0 skipped, 0 errors** on that run. The Spark tests are part of that 389 (they are marked
 `requires_jvm` but a JVM is present, so they ran — the suite would have printed a loud banner and
 reported them as skipped otherwise). The earlier runs recorded in this file said 316, 333 and 339; the
 49 added since are the review-response tests (authz spoofing, commission precision, the ledger's
 compare-and-set races, the silent-drop paths, the metric-identity/Terraform checks, the adversarial
 Spark comparison and the EMR-threshold test).
 
-The suite was then run **twice, consecutively, on this tree** (`pytest tests -q` both times, no
-deselection, no `-p no:randomly`): `389 passed in 508.44s` and `389 passed in 339.95s`. Two clean
-runs matter more than one: a gate that passes once and flakes the next time is worse than a red one,
-and the Spark module is the part most likely to flake.
+The suite was then run **twice, consecutively, on the tree as it was then** (`pytest tests -q` both
+times, no deselection, no `-p no:randomly`): `389 passed in 508.44s` and `389 passed in 339.95s`. Two
+clean runs matter more than one: a gate that passes once and flakes the next time is worse than a red
+one, and the Spark module is the part most likely to flake.
+
+**After the two CI-only fixes** — the stale-lease race on the S3 path (which moto cannot decide: its
+`If-Match` check is a compare followed by a write) and a parquet test that silently skipped on CI
+because pyarrow was not installed — the same command was run **twice, consecutively, on the fixed
+tree**: `395 passed, 0 failed, 0 skipped in 476.72s` and `395 passed, 0 failed, 0 skipped in 454.17s`,
+92% coverage (2,560 statements, 156 missed; 632 branches, 79 partial). Six tests were added
+(`TestConditionalWriteGuards` and the two backend-independent race tests in
+`tests/unit/test_idempotency.py`), and the parquet skip is gone: `requirements-dev.txt` installs
+pyarrow and `tests/unit/test_generator.py` imports it loudly instead of `pytest.importorskip`. The
+race was re-checked on **Linux** (WSL Ubuntu, Python 3.12.3, moto 5.2.3), where the CI failure
+appeared: 25 consecutive 4-worker races against moto with a hostile GIL switch interval produced two
+winners in 3 of 25 runs with the pre-fix `storage.py`, and exactly one winner in 25 of 25 with the
+fix; the five deterministic tests fail against the pre-fix file and pass against the fixed one.
 
 Real assertion counts by area, from the same run:
 
@@ -377,7 +390,7 @@ failed before the fix and passes after it):
 | --- | --- | --- |
 | **Authorisation bypass**: `presign` trusted caller-supplied `X-Caller-Agent-Id`/`X-Caller-Role` headers, and the deployed route had no authorizer, so `{'X-Caller-Agent-Id':'AGT-000009','X-Caller-Role':'reports-admin'}` returned another agent's `report_key` with HTTP 200 | `TestHeaderSpoofingIsOffByDefault` in `tests/unit/test_presign.py` | the header fallback is gated behind `AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK` (default off) and a real JWT authorizer was added to the Terraform route |
 | **Money**: the chunker quantised `commission_rate` to 2dp *before* multiplying, so `99999.99 × 0.0750` was `8000.00` against Spark's `7500.00` — and the delta flowed into the TOTAL row and the emailed figure | `TestCommissionPrecision` in `tests/unit/test_aggregation.py`, plus the adversarial Spark/chunker byte comparison | `to_rate_decimal` (4dp, matching `DecimalType(9,4)`) and a single HALF_UP rounding of the product |
-| **Idempotency race**: marker updates were unconditional, so two workers could both claim the same stale lease (both email), and a late `mark_failed` could regress a `sent` marker (so the next delivery emailed again) | `TestStaleLeaseRace` and `TestTerminalSentIsNeverRegressed` in `tests/unit/test_idempotency.py` | every marker update is a compare-and-set (`If-Match` on S3, an exclusive lock + content hash locally), each claim mints a `lease_id`, and `sent` is terminal |
+| **Idempotency race**: marker updates were unconditional, so two workers could both claim the same stale lease (both email), and a late `mark_failed` could regress a `sent` marker (so the next delivery emailed again) | `TestStaleLeaseRace` and `TestTerminalSentIsNeverRegressed` in `tests/unit/test_idempotency.py`, plus `TestConditionalWriteGuards` for the in-process guarantee against a backend that evaluates no conditional headers | every marker update is a compare-and-set (`If-Match` on S3, an exclusive lock + content hash locally), each claim mints a `lease_id`, and `sent` is terminal. On the S3 path the compare-and-set is exclusive **inside one process** as well (per-key lock + version re-read), because moto's `If-Match` check is a compare followed by a write and cannot decide a threaded race; real S3's server-side evaluation is the cross-process guard |
 | **Silent non-delivery**: a message whose lease was still live was reported `duplicate`/`in_flight` with **no** `batchItemFailure`, so SQS deleted it and the agent was never emailed | `TestNothingIsSilentlyDropped::test_a_message_whose_lease_is_still_live_is_redelivered` | `in_flight` is now `deferred` and returned in `batchItemFailures`; the lease (240 s) is shorter than the SQS retry window (300 s × 3) so the retry actually happens |
 | **Silent non-delivery**: `AccountSendingPausedException` was classified permanent, so the message was acknowledged with no DLQ entry and the runbook's redrive playbook had nothing to redrive | `test_ses_account_pause_is_retryable_and_reaches_the_dlq` | the code is retryable (an account-level pause clears); every failed send now goes to the DLQ, retryable or not |
 | **Silent non-delivery**: a corrupt dispatch marker raised `ConfigError` (permanent) and the message was deleted | `test_a_corrupt_marker_is_redelivered_not_swallowed` | permanent failures are DLQ-routed too; only an unparseable *payload* is acknowledged, and that one is quarantined to S3 first |
@@ -421,6 +434,12 @@ Every gate below was then run **twice, consecutively, on this tree**, with the J
 Spark tests ran rather than skipped: ruff clean, `ruff format --check` clean (56 files), mypy 0 errors
 (50 source files), **389 tests passed, 0 failed, 0 skipped** in both runs, the 5,000-row e2e `E2E OK`,
 `terraform fmt -check`/`init`/`validate` clean, secret grep empty.
+
+**After the two CI-only fixes** (the stale-lease race on the S3 path and the parquet test that skipped
+on CI), the same gates were re-run twice on the fixed tree: ruff clean, `ruff format --check` clean
+(56 files), mypy 0 errors (50 source files), **395 tests passed, 0 failed, 0 skipped** in both runs
+(`476.72s` and `454.17s`), the 5,000-row e2e `E2E OK` (48.4 s wall), `terraform fmt -check`/`init`/
+`validate` clean, secret grep empty.
 
 **Two deliberate deviations from SPEC.md, both because the spec's wording is wrong about AWS:**
 

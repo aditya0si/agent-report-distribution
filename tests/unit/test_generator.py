@@ -8,6 +8,13 @@ import json
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
+# pyarrow is imported loudly, not with pytest.importorskip: it is a declared dev dependency
+# (requirements-dev.txt, the file CI installs from) and the parquet round-trip below is the only test
+# that exercises the parquet writer at all. Guarding the import made that test vanish on CI - the
+# suite reported "1 skipped" and nothing was checked - which is exactly what this repo does not do.
+# A missing pyarrow is a broken environment and has to fail the suite.
+import pyarrow
+import pyarrow.parquet as pq
 import pytest
 
 from agent_reports.common.errors import ConfigError
@@ -203,17 +210,22 @@ class TestGeneratedData:
         assert all(rate == rate.quantize(Decimal("0.0001")) for rate in rates), sorted(rates)
 
     def test_parquet_output_round_trips(self, tmp_path: Path) -> None:
-        pyarrow = pytest.importorskip("pyarrow")
-        parquet = pytest.importorskip("pyarrow.parquet")
+        """The parquet writer, read back with the same engine that wrote it.
+
+        This is the only test of ``_parquet_bytes``; it used to be ``pytest.importorskip("pyarrow")``
+        and so reported as a skip on CI (which did not install pyarrow) - a parquet deliverable with
+        nothing testing it. The import at the top of this module now fails loudly instead, and
+        requirements-dev.txt installs pyarrow, so the test runs wherever the suite runs.
+        """
         store = LocalStorage(tmp_path)
         generate_dataset(
             DatasetConfig(report_date="2026-09-20", agents=4, seed=4, extension="parquet"), store
         )
         key = "raw/dt=2026-09-20/source=policies/part-00000.parquet"
-        table = parquet.read_table(io.BytesIO(store.get_bytes(key)))
+        table = pq.read_table(io.BytesIO(store.get_bytes(key)))
+        assert isinstance(table, pyarrow.Table)
         assert table.num_rows > 0
         assert list(table.column_names) == list(SOURCE_COLUMNS["policies"])
-        assert pyarrow  # imported for the type check above
 
     def test_manifest_is_written(self, tmp_path: Path) -> None:
         store = LocalStorage(tmp_path)
