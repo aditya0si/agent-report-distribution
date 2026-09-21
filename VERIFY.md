@@ -140,7 +140,7 @@ $ .venv/Scripts/python.exe -c "import agent_reports, agent_reports.pipeline; pri
 1.0.0
 
 $ .venv/Scripts/python.exe -m pytest tests/integration/test_spark_job.py -q
-5 passed
+5 passed in 24.62s
 ```
 
 The Lambda deployment package is produced by Terraform's `archive_file` data source
@@ -177,8 +177,38 @@ E2E OK
 
 ```console
 $ .venv/Scripts/python.exe scripts/e2e_local.py --rows 50000 --shards 4 --quiet
-E2E_50K_OUTPUT
+=== Agent Report Distribution - offline end-to-end (moto) ===
+report_date         : 2026-09-20
+rows in             : 52,471 (agents 3,805 / policies 30,440 / claims 18,226)
+agents discovered   : 3,805
+agents processed    : 3,805
+reports written     : 3,805
+emails sent         : 3,805 (SES captured 3,805)
+duplicates / failed : 0 / 0
+queue drained       : yes
+dlq depth           : 0
+objects written     : 7,624
+metrics emitted     : 386 EMF documents (ReportsWritten, RowsIn, AgentsDiscovered, MessagesEnqueued, BatchItemFailures, EmailsSent, EmailsFailed, DuplicatesSuppressed, DispatchLatencyMs, ReportAgeSeconds)
+cloudwatch metrics  : 10 published (AgentsDiscovered, BatchItemFailures, DispatchLatencyMs, DuplicatesSuppressed, EmailsFailed, EmailsSent, MessagesEnqueued, ReportAgeSeconds, ReportsWritten, RowsIn)
+pre-signed link     : HTTP 200, 1,420 bytes, matches report object: True
+sample report       : reports/dt=2026-09-20/agent_id=AGT-000001/report.csv
+manifest            : s3://agent-reports-processed/state/runs/dt=2026-09-20/manifest.json
+stage timings (s)   : generate=0.748, aggregate=12.248, fanout=130.629, dispatch=807.027
+duration            : 959.865 s (wall 961.563 s)
+
+E2E OK
 ```
+
+16 minutes for a 3,805-agent day, with **807 s of that in the dispatch stage** — that is moto
+serialising ~3,800 × (SQS receive + S3 lease write + S3 HEAD + S3 GET + SES send + marker write +
+SQS delete) in a single process, not the pipeline's own latency: the per-message dispatcher latency
+recorded in the EMF metrics for the same run was ~75 ms (`DispatchLatencyMs`).
+
+**The first attempt at this run failed**, which is the most useful thing in this file: it stopped
+after 2,000 of 3,805 emails with the queue half-full, because the dispatch loop's batch cap was a
+fixed 200. The script exited non-zero and named both problems (`emails sent (2000) != agents
+reported (3805)`, `SQS queue did not drain`). The cap is now derived from the fan-out size, and the
+run above is the re-run.
 
 ## Gate 6 — secret grep
 
