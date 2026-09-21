@@ -13,9 +13,11 @@ concatenate buckets or filesystem roots.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +27,7 @@ from urllib.parse import urlparse
 
 from botocore.exceptions import ClientError, ParamValidationError
 
-from .errors import ConfigError, PermanentError
+from .errors import ConfigError, DependencyError, PermanentError
 from .settings import Settings
 
 __all__ = [
@@ -56,6 +58,17 @@ class Storage(Protocol):
     ) -> str: ...
 
     def get_bytes(self, relative_key: str) -> bytes: ...
+
+    def get_bytes_with_version(self, relative_key: str) -> tuple[bytes, str]: ...
+
+    def put_bytes_if_version(
+        self,
+        relative_key: str,
+        data: bytes,
+        *,
+        version: str,
+        content_type: str = "text/csv",
+    ) -> bool: ...
 
     def iter_lines(self, relative_key: str) -> Iterator[str]: ...
 
@@ -182,6 +195,50 @@ class S3Storage:
         response = self.client.get_object(Bucket=self.bucket, Key=self.key_at(relative_key))
         body: bytes = response["Body"].read()
         return body
+
+    def get_bytes_with_version(self, relative_key: str) -> tuple[bytes, str]:
+        """Read the object together with its ETag - the token a conditional write needs."""
+        response = self.client.get_object(Bucket=self.bucket, Key=self.key_at(relative_key))
+        body: bytes = response["Body"].read()
+        version = str(response.get("ETag") or "")
+        if not version:
+            raise PermanentError(
+                "S3 returned no ETag, so a conditional write is impossible",
+                context={"key": relative_key},
+            )
+        return body, version
+
+    def put_bytes_if_version(
+        self,
+        relative_key: str,
+        data: bytes,
+        *,
+        version: str,
+        content_type: str = "text/csv",
+    ) -> bool:
+        """Compare-and-set: write only if the object still has *version*. ``False`` when it moved.
+
+        S3 evaluates ``If-Match`` server-side, so two writers that read the same version cannot both
+        succeed - which is exactly what makes a stale-lease claim exclusive.
+        """
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self.key_at(relative_key),
+                Body=data,
+                ContentType=content_type,
+                IfMatch=version,
+            )
+        except ClientError as exc:
+            if _error_code(exc) in ("412", "PreconditionFailed", "ConditionalRequestConflict"):
+                return False
+            raise
+        except ParamValidationError as exc:  # pragma: no cover - very old botocore only
+            raise PermanentError(
+                "this botocore build does not support conditional S3 writes",
+                context={"error": str(exc)},
+            ) from exc
+        return True
 
     def iter_lines(self, relative_key: str) -> Iterator[str]:
         """Stream an object line by line (the S3 body is never fully materialised)."""
@@ -323,6 +380,44 @@ class LocalStorage:
             raise FileNotFoundError(str(path))
         return path.read_bytes()
 
+    def get_bytes_with_version(self, relative_key: str) -> tuple[bytes, str]:
+        """Read the file together with a content-derived version token.
+
+        S3's ETag is a hash of the object, so using a hash here keeps one semantics for both stores
+        (the ledger's conditional writes do not care which store they are talking to).
+        """
+        payload = self.get_bytes(relative_key)
+        return payload, _content_version(payload)
+
+    def put_bytes_if_version(
+        self,
+        relative_key: str,
+        data: bytes,
+        *,
+        version: str,
+        content_type: str = "text/csv",
+    ) -> bool:
+        """Compare-and-set under an exclusive per-key lock.
+
+        A read-compare-write is not atomic on a filesystem, so the lock is what makes two racing
+        writers decide the same way the S3 ``If-Match`` decides: exactly one of them wins. The
+        replacement itself goes through a temp file + ``os.replace`` so a concurrent *reader* never
+        observes a half-written marker.
+        """
+        path = self.path_for(relative_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = path.with_name(f".{path.name}.lock")
+        _acquire_lock(lock)
+        try:
+            if not path.exists():
+                return False
+            if _content_version(path.read_bytes()) != version:
+                return False
+            _atomic_replace(path, data)
+            return True
+        finally:
+            lock.unlink(missing_ok=True)
+
     def iter_lines(self, relative_key: str) -> Iterator[str]:
         path = self.path_for(relative_key)
         if not path.exists():
@@ -361,7 +456,9 @@ class LocalStorage:
             return []
         keys = []
         for path in sorted(base.rglob("*")):
-            if path.is_file():
+            # A leading dot marks a transient file (the create-if-absent temp file, the
+            # compare-and-set lock). Those are never data, so they are not listed as objects.
+            if path.is_file() and not path.name.startswith("."):
                 keys.append(str(path.relative_to(self.root)).replace(os.sep, "/"))
         return keys
 
@@ -387,3 +484,54 @@ def _error_code(exc: ClientError) -> str:
     meta = response.get("ResponseMetadata", {}) if isinstance(response, dict) else {}
     status = meta.get("HTTPStatusCode") if isinstance(meta, dict) else None
     return str(status) if status is not None else "Unknown"
+
+
+# --------------------------------------------------------------------------- conditional-write helpers
+def _content_version(payload: bytes) -> str:
+    """Version token for the filesystem store: a hash of the bytes, like an S3 ETag."""
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _atomic_replace(path: Path, data: bytes) -> None:
+    """Replace *path* with *data* atomically, so readers see old or new, never half."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    temporary.write_bytes(data)
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _acquire_lock(lock: Path, *, timeout: float = 5.0, stale_after: float = 30.0) -> None:
+    """Take an exclusive per-key lock, or raise a retryable error.
+
+    ``O_CREAT|O_EXCL`` is atomic on every filesystem this runs on, so exactly one contender wins.
+    A lock left behind by a crashed holder is stolen once it is older than *stale_after* - otherwise
+    one dead process would wedge every later conditional write for that key.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError as exc:
+            # Windows returns ERROR_ACCESS_DENIED (PermissionError) rather than ERROR_FILE_EXISTS when
+            # the lock file is being created and removed concurrently, so "somebody else holds it" has
+            # two possible shapes. Anything else is a real I/O problem and must not be swallowed.
+            if not isinstance(exc, (FileExistsError, PermissionError)):
+                raise
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except OSError:  # the holder released it between the two calls
+                continue
+            if age > stale_after:
+                lock.unlink(missing_ok=True)
+                continue
+            if time.monotonic() > deadline:
+                raise DependencyError(
+                    "timed out waiting for the local storage lock",
+                    context={"lock": str(lock)},
+                ) from exc
+            time.sleep(0.001)
+            continue
+        os.close(handle)
+        return

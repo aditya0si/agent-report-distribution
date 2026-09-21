@@ -9,18 +9,30 @@ short state machine::
                               +--(retryable failure)--> failed --claim--> dispatching ...
                               +--(permanent failure)--> failed (terminal for the day)
 
-Two writers must never both email the same agent:
+Two writers must never both email the same agent. Three mechanisms enforce that, and all three are
+**conditional writes** - a read-then-write would be decided by scheduling, not by the store:
 
 * the first write of a fresh marker uses a conditional create (``IfNoneMatch: *`` on S3,
-  ``O_EXCL`` locally) so a race is decided by the store, not by application timing;
-* a ``dispatching`` marker is a **lease**. If a Lambda dies mid-send the lease expires
-  (``lease_seconds``, default 15 min) and the next delivery is allowed to retry - a stale lease is
-  reported as ``stale_lease`` so the retry is visible in metrics rather than silent.
+  ``O_EXCL``/``os.link`` locally);
+* every *update* of an existing marker is a compare-and-set on the version (ETag) that was read
+  (``IfMatch`` on S3, an exclusive lock + content hash locally). Two workers that both see a stale
+  lease therefore cannot both claim it: one write succeeds and the other is re-evaluated against the
+  winner's state, which is a live lease (``in_flight``);
+* each claim mints a ``lease_id``, and a terminal ``sent`` record is never rewritten. A late
+  ``mark_failed`` from a worker whose send already succeeded - or whose lease was taken over - cannot
+  regress the marker, so the next delivery still sees ``already_sent``.
+
+A ``dispatching`` marker is a **lease**. If a Lambda dies mid-send the lease expires and the next
+delivery is allowed to retry - reported as ``stale_lease`` so the retry is visible in metrics rather
+than silent. The lease (``DEFAULT_LEASE_SECONDS``) is deliberately shorter than
+``visibility_timeout x maxReceiveCount`` (300 s x 3 = 900 s in ``infra/terraform/sqs.tf``) so a
+message whose worker died is re-claimed on its first redelivery instead of being dead-lettered.
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -29,7 +41,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from . import keys
-from .errors import AgentReportsError, ConfigError
+from .errors import AgentReportsError, ConfigError, DependencyError
 from .keys import validate_agent_id, validate_report_date
 from .storage import Storage
 
@@ -46,7 +58,14 @@ STATUS_DISPATCHING = "dispatching"
 STATUS_SENT = "sent"
 STATUS_FAILED = "failed"
 
-DEFAULT_LEASE_SECONDS = 900
+#: Must be longer than the dispatcher's own Lambda timeout (120 s, ``infra/terraform/lambda.tf``)
+#: and shorter than the SQS redelivery window (visibility timeout x maxReceiveCount), or a worker
+#: that dies mid-send leaves a lease that outlives the message's retries.
+DEFAULT_LEASE_SECONDS = 240
+
+#: Bounded retries for the compare-and-set loops. A marker that changes five times under one caller
+#: is contention, not progress, and the caller should come back through SQS.
+MAX_CAS_ATTEMPTS = 5
 
 
 @dataclass(frozen=True)
@@ -60,6 +79,7 @@ class DispatchRecord:
     created_at: str = ""
     updated_at: str = ""
     lease_expires_at: str | None = None
+    lease_id: str = ""
     sent_at: str | None = None
     ses_message_id: str | None = None
     last_error_code: str | None = None
@@ -122,6 +142,17 @@ class ClaimResult:
     def duplicate_suppressed(self) -> bool:
         return not self.claimed and self.reason in ("already_sent", "in_flight")
 
+    @property
+    def redeliver(self) -> bool:
+        """True when the message must go back to SQS instead of being acknowledged.
+
+        ``already_sent`` is the only suppression that is safe to acknowledge: the agent has the
+        email. ``in_flight`` means *another worker may still be sending* - if that worker died, the
+        message is the only thing that will ever deliver the report, so it is redelivered (and the
+        lease is claimed as ``stale_lease`` once it expires).
+        """
+        return not self.claimed and self.reason in ("in_flight", "contended")
+
 
 _PERMANENT_REASONS = frozenset(
     {
@@ -130,7 +161,6 @@ _PERMANENT_REASONS = frozenset(
         "PermanentError",
         "ConfigError",
         "MessageRejected",
-        "AccountSendingPaused",
     }
 )
 
@@ -159,15 +189,22 @@ class DispatchLedger:
 
     # ----------------------------------------------------------------- I/O
     def read(self, report_date: str, agent_id: str) -> DispatchRecord | None:
+        found = self.read_with_version(report_date, agent_id)
+        return found[0] if found is not None else None
+
+    def read_with_version(
+        self, report_date: str, agent_id: str
+    ) -> tuple[DispatchRecord, str] | None:
+        """``(record, version)`` where *version* is the token a conditional write must present."""
         try:
-            raw = self._storage.get_bytes(self.key_for(report_date, agent_id))
+            raw, version = self._storage.get_bytes_with_version(self.key_for(report_date, agent_id))
         except FileNotFoundError:
             return None
         except ClientError as exc:
             if _code(exc) in ("404", "NoSuchKey", "NotFound"):
                 return None
             raise
-        return DispatchRecord.from_json(raw.decode("utf-8"))
+        return DispatchRecord.from_json(raw.decode("utf-8")), version
 
     def claim(
         self,
@@ -178,50 +215,64 @@ class DispatchLedger:
         now: datetime | None = None,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> ClaimResult:
-        """Try to take ownership of sending this agent's report."""
-        moment = _aware(now)
-        existing = self.read(report_date, agent_id)
+        """Try to take ownership of sending this agent's report.
 
-        if existing is None:
-            record = DispatchRecord(
-                report_date=report_date,
-                agent_id=agent_id,
+        Every write here is a compare-and-set against the version that was read, so two workers that
+        read the same stale lease cannot both walk away believing they own the send: the loser's
+        write is rejected by the store and it re-evaluates against the winner's fresh lease (which
+        is ``in_flight``, i.e. "not you, not now").
+        """
+        moment = _aware(now)
+
+        for _ in range(MAX_CAS_ATTEMPTS):
+            current = self.read_with_version(report_date, agent_id)
+
+            if current is None:
+                record = DispatchRecord(
+                    report_date=report_date,
+                    agent_id=agent_id,
+                    status=STATUS_DISPATCHING,
+                    attempts=1,
+                    created_at=moment.isoformat(),
+                    updated_at=moment.isoformat(),
+                    lease_expires_at=(moment + timedelta(seconds=lease_seconds)).isoformat(),
+                    lease_id=_new_lease_id(),
+                    recipient=recipient,
+                    history=[{"at": moment.isoformat(), "event": "claimed", "reason": "new"}],
+                )
+                if self._create_only(record):
+                    return ClaimResult(claimed=True, reason="new", record=record)
+                # Lost a race with a concurrent delivery: re-read and re-decide.
+                continue
+
+            existing, version = current
+            if existing.status == STATUS_SENT:
+                return ClaimResult(claimed=False, reason="already_sent", record=existing)
+            if existing.lease_active(moment):
+                return ClaimResult(claimed=False, reason="in_flight", record=existing)
+            if existing.status == STATUS_FAILED and not existing.retryable_after(moment):
+                return ClaimResult(claimed=False, reason="permanent_failure", record=existing)
+
+            reason = "stale_lease" if existing.status == STATUS_DISPATCHING else "retry"
+            updated = _replace(
+                existing,
                 status=STATUS_DISPATCHING,
-                attempts=1,
-                created_at=moment.isoformat(),
+                attempts=existing.attempts + 1,
                 updated_at=moment.isoformat(),
                 lease_expires_at=(moment + timedelta(seconds=lease_seconds)).isoformat(),
-                recipient=recipient,
-                history=[{"at": moment.isoformat(), "event": "claimed", "reason": "new"}],
+                lease_id=_new_lease_id(),
+                history=[
+                    *existing.history,
+                    {"at": moment.isoformat(), "event": "claimed", "reason": reason},
+                ],
             )
-            if self._create_only(record):
-                return ClaimResult(claimed=True, reason="new", record=record)
-            # Lost a race with a concurrent delivery: re-read and fall through to the checks below.
-            existing = self.read(report_date, agent_id)
-            if existing is None:  # pragma: no cover - only reachable with a broken store
-                raise ConfigError("dispatch marker vanished after a conditional-create conflict")
+            if self._write_if_version(updated, version):
+                return ClaimResult(claimed=True, reason=reason, record=updated)
 
-        if existing.status == STATUS_SENT:
-            return ClaimResult(claimed=False, reason="already_sent", record=existing)
-        if existing.lease_active(moment):
-            return ClaimResult(claimed=False, reason="in_flight", record=existing)
-        if existing.status == STATUS_FAILED and not existing.retryable_after(moment):
-            return ClaimResult(claimed=False, reason="permanent_failure", record=existing)
-
-        reason = "stale_lease" if existing.status == STATUS_DISPATCHING else "retry"
-        updated = _replace(
-            existing,
-            status=STATUS_DISPATCHING,
-            attempts=existing.attempts + 1,
-            updated_at=moment.isoformat(),
-            lease_expires_at=(moment + timedelta(seconds=lease_seconds)).isoformat(),
-            history=[
-                *existing.history,
-                {"at": moment.isoformat(), "event": "claimed", "reason": reason},
-            ],
-        )
-        self._write(updated, if_none_match=False)
-        return ClaimResult(claimed=True, reason=reason, record=updated)
+        current = self.read_with_version(report_date, agent_id)
+        if current is None:  # pragma: no cover - only reachable with a broken store
+            raise ConfigError("dispatch marker vanished under a contended claim")
+        return ClaimResult(claimed=False, reason="contended", record=current[0])
 
     def mark_sent(
         self,
@@ -233,26 +284,41 @@ class DispatchLedger:
         now: datetime | None = None,
         record: DispatchRecord | None = None,
     ) -> DispatchRecord:
+        """Record a delivered email. ``sent`` is terminal and is never rewritten."""
         moment = _aware(now)
-        base = record or self.read(report_date, agent_id)
-        if base is None:
-            raise ConfigError("cannot mark a report sent before it was claimed")
-        updated = _replace(
-            base,
-            status=STATUS_SENT,
-            sent_at=moment.isoformat(),
-            ses_message_id=ses_message_id,
-            recipient=recipient,
-            lease_expires_at=None,
-            last_error_code=None,
-            updated_at=moment.isoformat(),
-            history=[
-                *base.history,
-                {"at": moment.isoformat(), "event": "sent", "ses_message_id": ses_message_id},
-            ],
+
+        for _ in range(MAX_CAS_ATTEMPTS):
+            current = self.read_with_version(report_date, agent_id)
+            if current is None:
+                raise ConfigError("cannot mark a report sent before it was claimed")
+            base, version = current
+            if base.status == STATUS_SENT:
+                # Already terminal. Rewriting it could only lose the SES message id that the
+                # duplicate-suppression path is read for.
+                return base
+            if not _holds_lease(base, record):
+                return base
+            updated = _replace(
+                base,
+                status=STATUS_SENT,
+                sent_at=moment.isoformat(),
+                ses_message_id=ses_message_id,
+                recipient=recipient,
+                lease_expires_at=None,
+                last_error_code=None,
+                updated_at=moment.isoformat(),
+                history=[
+                    *base.history,
+                    {"at": moment.isoformat(), "event": "sent", "ses_message_id": ses_message_id},
+                ],
+            )
+            if self._write_if_version(updated, version):
+                return updated
+
+        raise DependencyError(
+            "the dispatch marker kept changing while recording a send; the message will be redelivered",
+            context={"agent_id": agent_id, "report_date": report_date},
         )
-        self._write(updated)
-        return updated
 
     def mark_failed(
         self,
@@ -264,29 +330,44 @@ class DispatchLedger:
         now: datetime | None = None,
         record: DispatchRecord | None = None,
     ) -> DispatchRecord:
-        """Record a failed attempt. ``error_code`` decides whether a retry is allowed."""
+        """Record a failed attempt. ``error_code`` decides whether a retry is allowed.
+
+        A late failure must never undo a send: if the stored marker is already ``sent`` - or another
+        worker holds the lease now - this returns the current record and writes nothing. That is the
+        difference between "the send failed" and "the send failed *before* somebody else succeeded".
+        """
         moment = _aware(now)
-        base = record or self.read(report_date, agent_id)
-        if base is None:
-            raise ConfigError("cannot mark a report failed before it was claimed")
-        updated = _replace(
-            base,
-            status=STATUS_FAILED,
-            last_error_code=error_code,
-            lease_expires_at=None,
-            updated_at=moment.isoformat(),
-            history=[
-                *base.history,
-                {
-                    "at": moment.isoformat(),
-                    "event": "failed",
-                    "error_code": error_code,
-                    "error_message": error_message,
-                },
-            ],
+
+        for _ in range(MAX_CAS_ATTEMPTS):
+            current = self.read_with_version(report_date, agent_id)
+            if current is None:
+                raise ConfigError("cannot mark a report failed before it was claimed")
+            base, version = current
+            if base.status == STATUS_SENT or not _holds_lease(base, record):
+                return base
+            updated = _replace(
+                base,
+                status=STATUS_FAILED,
+                last_error_code=error_code,
+                lease_expires_at=None,
+                updated_at=moment.isoformat(),
+                history=[
+                    *base.history,
+                    {
+                        "at": moment.isoformat(),
+                        "event": "failed",
+                        "error_code": error_code,
+                        "error_message": error_message,
+                    },
+                ],
+            )
+            if self._write_if_version(updated, version):
+                return updated
+
+        raise DependencyError(
+            "the dispatch marker kept changing while recording a failure; the message will be redelivered",
+            context={"agent_id": agent_id, "report_date": report_date},
         )
-        self._write(updated)
-        return updated
 
     def sent_agents(self, report_date: str) -> list[str]:
         """Agent ids already marked sent for a date - used by the run manifest."""
@@ -318,13 +399,32 @@ class DispatchLedger:
             return False
         return True
 
-    def _write(self, record: DispatchRecord, *, if_none_match: bool = False) -> None:
-        self._storage.put_bytes(
+    def _write_if_version(self, record: DispatchRecord, version: str) -> bool:
+        """Compare-and-set: False when the marker moved since *version* was read."""
+        return self._storage.put_bytes_if_version(
             self.key_for(record.report_date, record.agent_id),
             record.to_json().encode("utf-8"),
+            version=version,
             content_type="application/json",
-            if_none_match=if_none_match,
         )
+
+
+def _holds_lease(current: DispatchRecord, claimed: DispatchRecord | None) -> bool:
+    """Does the caller still own the marker?
+
+    ``claimed`` is the record returned by :meth:`DispatchLedger.claim`. A marker that now carries a
+    different ``lease_id`` belongs to another worker, so this caller must not write to it - writing
+    is what used to let a late ``mark_failed`` regress a ``sent`` record.
+    """
+    if claimed is None:
+        return True
+    if not current.lease_id or not claimed.lease_id:
+        return True  # legacy marker without a lease id: fall back to the version check alone
+    return current.lease_id == claimed.lease_id
+
+
+def _new_lease_id() -> str:
+    return uuid.uuid4().hex
 
 
 def _replace(record: DispatchRecord, **changes: Any) -> DispatchRecord:

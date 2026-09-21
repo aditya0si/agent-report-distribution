@@ -10,6 +10,7 @@ import pytest
 
 from agent_reports.common.errors import ConfigError
 from agent_reports.common.idempotency import (
+    DEFAULT_LEASE_SECONDS,
     STATUS_DISPATCHING,
     STATUS_FAILED,
     STATUS_SENT,
@@ -71,7 +72,22 @@ class TestClaims:
         assert retry.claimed is True
         assert retry.reason == "stale_lease"
         assert retry.record.attempts == 2
-        assert retry.record.lease_expires_at == (later + timedelta(seconds=900)).isoformat()
+        assert (
+            retry.record.lease_expires_at
+            == (later + timedelta(seconds=DEFAULT_LEASE_SECONDS)).isoformat()
+        )
+
+    def test_the_default_lease_outlives_the_lambda_but_not_the_sqs_retries(self) -> None:
+        """The lease has to sit between two numbers, or a crashed worker loses the message.
+
+        ``infra/terraform/lambda.tf`` gives the dispatcher a 120 s timeout, and
+        ``infra/terraform/sqs.tf`` gives the queue a 300 s visibility timeout with
+        ``maxReceiveCount`` 3. A lease shorter than the Lambda timeout could be stolen from a worker
+        that is still running (two emails); a lease longer than the retry window means the message is
+        dead-lettered before the lease ever expires (no email).
+        """
+        assert DEFAULT_LEASE_SECONDS > 120
+        assert DEFAULT_LEASE_SECONDS < 300 * 3
 
     def test_retryable_failure_allows_a_retry(self, ledger: DispatchLedger) -> None:
         claim = ledger.claim(DATE, AGENT, now=NOW)
@@ -206,6 +222,53 @@ class TestConditionalCreate:
             store.put_bytes("k", b"second", if_none_match=True)
         assert store.get_bytes("k") == b"first"
 
+    def test_compare_and_set_admits_exactly_one_writer(self, tmp_path: Path) -> None:
+        """The primitive the ledger's stale-lease claim is built on.
+
+        Every contender reads the same version, then tries to write against it: the store must let
+        exactly one through, whichever order the threads happen to run in.
+        """
+        store = LocalStorage(tmp_path)
+        store.put_bytes("marker", b"v1")
+        _, version = store.get_bytes_with_version("marker")
+        barrier = threading.Barrier(4)
+        results: list[bool] = []
+        lock = threading.Lock()
+
+        def attempt(index: int) -> None:
+            barrier.wait()
+            wrote = store.put_bytes_if_version("marker", f"v2-{index}".encode(), version=version)
+            with lock:
+                results.append(wrote)
+
+        threads = [threading.Thread(target=attempt, args=(index,)) for index in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sorted(results) == [False, False, False, True]
+        assert store.get_bytes("marker").startswith(b"v2-")
+
+    def test_compare_and_set_rejects_a_stale_version(self, tmp_path: Path) -> None:
+        store = LocalStorage(tmp_path)
+        store.put_bytes("marker", b"v1")
+        _, stale = store.get_bytes_with_version("marker")
+        assert store.put_bytes_if_version("marker", b"v2", version=stale) is True
+        assert store.put_bytes_if_version("marker", b"v3", version=stale) is False
+        assert store.get_bytes("marker") == b"v2"
+
+    def test_compare_and_set_refuses_a_missing_object(self, tmp_path: Path) -> None:
+        store = LocalStorage(tmp_path)
+        assert store.put_bytes_if_version("absent", b"x", version="whatever") is False
+
+    def test_compare_and_set_leaves_no_transient_files(self, tmp_path: Path) -> None:
+        store = LocalStorage(tmp_path)
+        store.put_bytes("marker", b"v1")
+        _, version = store.get_bytes_with_version("marker")
+        assert store.put_bytes_if_version("marker", b"v2", version=version) is True
+        assert [path.name for path in tmp_path.iterdir()] == ["marker"]
+        assert store.list_keys() == ["marker"]
+
     def test_create_if_absent_never_publishes_a_partial_file(self, tmp_path: Path) -> None:
         """A racing reader must see either no file or the whole file - never an empty one."""
         store = LocalStorage(tmp_path)
@@ -280,3 +343,187 @@ def test_zones_fixture_is_usable(local_zones: Zones) -> None:
     """The filesystem zones fixture used by the Spark test must accept a marker write."""
     ledger = DispatchLedger(local_zones.processed)
     assert ledger.claim(DATE, AGENT, now=NOW).claimed is True
+
+
+class TestStaleLeaseRace:
+    """The reviewer's barrier-synchronised race, pinned.
+
+    Before the compare-and-set, two workers that both read the same stale-lease marker both got
+    ``claimed=True`` and both emailed the agent.
+    """
+
+    def test_only_one_worker_can_claim_a_stale_lease(self, tmp_path: Path) -> None:
+        ledger = DispatchLedger(LocalStorage(tmp_path / "processed"))
+        ledger.claim(DATE, AGENT, now=NOW, lease_seconds=1)
+        moment = NOW + timedelta(seconds=2)  # the lease is now stale
+        barrier = threading.Barrier(6)
+        results: list[tuple[bool, str]] = []
+        lock = threading.Lock()
+
+        def attempt() -> None:
+            barrier.wait()
+            claim = ledger.claim(DATE, AGENT, now=moment)
+            with lock:
+                results.append((claim.claimed, claim.reason))
+
+        threads = [threading.Thread(target=attempt) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        winners = [reason for claimed, reason in results if claimed]
+        assert winners == ["stale_lease"], results
+        losers = {reason for claimed, reason in results if not claimed}
+        assert losers <= {"in_flight", "contended"}, results
+        stored = ledger.read(DATE, AGENT)
+        assert stored is not None
+        assert stored.attempts == 2  # exactly one takeover, not six
+
+    def test_a_live_lease_is_deferred_rather_than_dropped(self, ledger: DispatchLedger) -> None:
+        """A crashed worker's message must not be acknowledged away.
+
+        ``in_flight`` means the message goes back to SQS (``redeliver``); only ``already_sent`` is
+        safe to acknowledge, because then the agent really does have the email.
+        """
+        first = ledger.claim(DATE, AGENT, now=NOW)
+        assert first.claimed is True
+        second = ledger.claim(DATE, AGENT, now=NOW + timedelta(seconds=1))
+        assert second.claimed is False
+        assert second.reason == "in_flight"
+        assert second.redeliver is True
+        assert second.duplicate_suppressed is True
+
+        ledger.mark_sent(
+            DATE,
+            AGENT,
+            ses_message_id="ses-1",
+            recipient="agt-000001@example.com",
+            now=NOW + timedelta(seconds=2),
+            record=first.record,
+        )
+        third = ledger.claim(DATE, AGENT, now=NOW + timedelta(seconds=3))
+        assert third.reason == "already_sent"
+        assert third.redeliver is False
+
+
+class TestTerminalSentIsNeverRegressed:
+    """The reviewer's second race: a late ``mark_failed`` used to undo a ``sent`` marker."""
+
+    def test_a_late_failure_does_not_resurrect_a_sent_report(self, ledger: DispatchLedger) -> None:
+        claim = ledger.claim(DATE, AGENT, now=NOW)
+        ledger.mark_sent(
+            DATE,
+            AGENT,
+            ses_message_id="ses-1",
+            recipient="agt-000001@example.com",
+            now=NOW + timedelta(seconds=1),
+            record=claim.record,
+        )
+        late = ledger.mark_failed(
+            DATE,
+            AGENT,
+            error_code="DependencyError",
+            error_message="SES throttled a duplicate delivery",
+            now=NOW + timedelta(seconds=2),
+            record=claim.record,
+        )
+        assert late.status == STATUS_SENT
+        assert late.ses_message_id == "ses-1"
+        assert late.sent_at is not None
+
+        again = ledger.claim(DATE, AGENT, now=NOW + timedelta(days=1))
+        assert again.claimed is False
+        assert again.reason == "already_sent"
+
+    def test_a_late_sent_does_not_overwrite_the_ses_message_id(
+        self, ledger: DispatchLedger
+    ) -> None:
+        claim = ledger.claim(DATE, AGENT, now=NOW)
+        first = ledger.mark_sent(
+            DATE,
+            AGENT,
+            ses_message_id="ses-first",
+            recipient="agt-000001@example.com",
+            now=NOW + timedelta(seconds=1),
+            record=claim.record,
+        )
+        second = ledger.mark_sent(
+            DATE,
+            AGENT,
+            ses_message_id="ses-second",
+            recipient="agt-000001@example.com",
+            now=NOW + timedelta(seconds=2),
+            record=claim.record,
+        )
+        assert first.ses_message_id == "ses-first"
+        assert second.ses_message_id == "ses-first"
+
+    def test_a_worker_that_lost_the_lease_cannot_write_to_it(self, ledger: DispatchLedger) -> None:
+        """After a takeover the marker belongs to the new worker, not to the old one."""
+        stale = ledger.claim(DATE, AGENT, now=NOW, lease_seconds=1)
+        takeover = ledger.claim(DATE, AGENT, now=NOW + timedelta(seconds=2))
+        assert takeover.claimed is True
+        assert takeover.reason == "stale_lease"
+        assert takeover.record.lease_id != stale.record.lease_id
+
+        written = ledger.mark_failed(
+            DATE,
+            AGENT,
+            error_code="DependencyError",
+            error_message="the worker I replaced came back",
+            now=NOW + timedelta(seconds=3),
+            record=stale.record,
+        )
+        assert written.status == STATUS_DISPATCHING
+        assert written.lease_id == takeover.record.lease_id
+
+    def test_the_lease_id_is_recorded_and_rotated(self, ledger: DispatchLedger) -> None:
+        first = ledger.claim(DATE, AGENT, now=NOW, lease_seconds=1)
+        assert first.record.lease_id
+        second = ledger.claim(DATE, AGENT, now=NOW + timedelta(seconds=2))
+        assert second.record.lease_id
+        assert second.record.lease_id != first.record.lease_id
+
+    def test_s3_compare_and_set_is_enforced_by_the_store(self, aws: object) -> None:
+        """moto evaluates ``If-Match``, so the S3 path has the same guarantee as the local one."""
+        import boto3
+
+        from agent_reports.common.storage import S3Storage
+
+        store = S3Storage(
+            boto3.client("s3", region_name="us-east-1"), bucket="agent-reports-processed"
+        )
+        store.put_bytes("state/probe.json", b"v1")
+        _, version = store.get_bytes_with_version("state/probe.json")
+        assert store.put_bytes_if_version("state/probe.json", b"v2", version=version) is True
+        assert store.put_bytes_if_version("state/probe.json", b"v3", version=version) is False
+        assert store.get_bytes("state/probe.json") == b"v2"
+
+    def test_s3_stale_lease_race_is_decided_by_the_store(self, aws: object) -> None:
+        import boto3
+
+        from agent_reports.common.storage import S3Storage
+
+        store = S3Storage(
+            boto3.client("s3", region_name="us-east-1"), bucket="agent-reports-processed"
+        )
+        ledger = DispatchLedger(store)
+        ledger.claim(DATE, AGENT, now=NOW, lease_seconds=1)
+        moment = NOW + timedelta(seconds=2)
+        barrier = threading.Barrier(4)
+        results: list[bool] = []
+        lock = threading.Lock()
+
+        def attempt() -> None:
+            barrier.wait()
+            claim = DispatchLedger(store).claim(DATE, AGENT, now=moment)
+            with lock:
+                results.append(claim.claimed)
+
+        threads = [threading.Thread(target=attempt) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sorted(results) == [False, False, False, True], results
