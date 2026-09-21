@@ -32,7 +32,7 @@ policy_start       date       ISO date
 policy_end         date       ISO date (start + 12 months)
 sum_insured        decimal    cover in INR
 premium            decimal    gross written premium in INR
-commission_rate    decimal    contracted rate for the product (0.06 - 0.20)
+commission_rate    decimal    contracted rate for the product, 4dp (0.06 - 0.20)
 status             string     Active | Lapsed | Renewed
 =================  =========  ========================================================
 
@@ -209,7 +209,7 @@ class ProductSpec:
 PRODUCTS: Final[tuple[ProductSpec, ...]] = (
     ProductSpec(
         name="Individual Health",
-        commission_rate=0.10,
+        commission_rate=0.1075,
         sum_insured_min=300_000,
         sum_insured_max=2_000_000,
         premium_rate_min=0.012,
@@ -221,7 +221,7 @@ PRODUCTS: Final[tuple[ProductSpec, ...]] = (
     ),
     ProductSpec(
         name="Group Health",
-        commission_rate=0.06,
+        commission_rate=0.0625,
         sum_insured_min=1_000_000,
         sum_insured_max=5_000_000,
         premium_rate_min=0.008,
@@ -233,7 +233,7 @@ PRODUCTS: Final[tuple[ProductSpec, ...]] = (
     ),
     ProductSpec(
         name="Personal Accident",
-        commission_rate=0.15,
+        commission_rate=0.1575,
         sum_insured_min=500_000,
         sum_insured_max=5_000_000,
         premium_rate_min=0.002,
@@ -245,7 +245,7 @@ PRODUCTS: Final[tuple[ProductSpec, ...]] = (
     ),
     ProductSpec(
         name="Term Life",
-        commission_rate=0.20,
+        commission_rate=0.1825,
         sum_insured_min=1_000_000,
         sum_insured_max=10_000_000,
         premium_rate_min=0.004,

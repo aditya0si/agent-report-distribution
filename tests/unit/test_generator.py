@@ -5,12 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import json
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import pytest
 
 from agent_reports.common.errors import ConfigError
+from agent_reports.common.report import to_decimal, to_rate_decimal
 from agent_reports.common.storage import LocalStorage
 from agent_reports.ingest import generator
 from agent_reports.ingest.cli import main as cli_main
@@ -168,19 +169,38 @@ class TestGeneratedData:
         assert len(policy_ids) == len(policies)
         for row in policies:
             assert row["agent_id"] in agents
-            expected = (Decimal(row["premium"]) * Decimal(row["commission_rate"])).quantize(
-                Decimal("0.01")
-            )
+            # The documented contract: parse the rate at 4dp, multiply, round the product HALF_UP
+            # once. (Quantising the rate to paise first - what the chunker used to do - is a
+            # different, wrong number for any rate that is not a multiple of 0.01.)
+            rate = to_rate_decimal(row["commission_rate"])
+            premium = to_decimal(row["premium"])
+            commission = (premium * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            assert commission == (premium * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            assert rate == Decimal(row["commission_rate"])
             assert Decimal(row["premium"]) > 0
-            assert expected == (Decimal(row["premium"]) * Decimal(row["commission_rate"])).quantize(
-                Decimal("0.01")
-            )
             assert Decimal(row["sum_insured"]) >= Decimal(row["premium"])
         for row in claims:
             assert row["policy_id"] in policy_ids
             assert row["agent_id"] in agents
             assert Decimal(row["settled_amount"]) <= Decimal(row["claimed_amount"])
             assert row["status"] in ("Settled", "Approved", "Rejected", "Pending")
+
+    def test_generated_rates_exercise_sub_paise_precision(self, tmp_path: Path) -> None:
+        """The default dataset must contain rates that are not multiples of 0.01.
+
+        With only 2dp rates the whole suite is blind to the rate-quantisation bug: rounding a rate
+        to paise before multiplying changes nothing when the rate already is a whole number of
+        paise. This test is what keeps that regression visible.
+        """
+        store = LocalStorage(tmp_path)
+        generate_dataset(DatasetConfig(report_date="2026-09-20", agents=8, seed=3), store)
+        rates = {
+            to_rate_decimal(row["commission_rate"])
+            for row in read_source(store, "2026-09-20", "policies")
+        }
+        assert rates, "the generator produced no policies"
+        assert any(rate != rate.quantize(Decimal("0.01")) for rate in rates), sorted(rates)
+        assert all(rate == rate.quantize(Decimal("0.0001")) for rate in rates), sorted(rates)
 
     def test_parquet_output_round_trips(self, tmp_path: Path) -> None:
         pyarrow = pytest.importorskip("pyarrow")

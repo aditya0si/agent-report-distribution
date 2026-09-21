@@ -18,7 +18,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from .errors import PermanentError
-from .report import AgentTotals, render_report_csv, summarize_details, to_decimal
+from .report import AgentTotals, render_report_csv, summarize_details, to_decimal, to_rate_decimal
 
 __all__ = ["ChunkerCapacityError", "PolicyRow", "RawAggregator"]
 
@@ -126,9 +126,11 @@ class RawAggregator:
                 context={"max_policies": self.max_policies, "agent_ids": len(self.agent_ids or ())},
             )
         premium = to_decimal(row.get("premium", "0"))
+        # The rate is parsed at 4dp (Spark's DecimalType(9,4)) and the *product* is rounded once:
+        # rounding the rate to paise first turns 0.0750 into 0.08 and inflates the commission.
         # HALF_UP (not the Decimal context default of HALF_EVEN) - commission is money, and the
         # Spark job's round() is HALF_UP too, so the two paths must agree on exact half-paise ties.
-        commission = (premium * to_decimal(row.get("commission_rate", "0"))).quantize(
+        commission = (premium * to_rate_decimal(row.get("commission_rate", "0"))).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
         self._policies[policy_id] = PolicyRow(
@@ -147,10 +149,17 @@ class RawAggregator:
         return True
 
     def add_claim_row(self, row: Mapping[str, str]) -> bool:
+        """Attach a claim to its policy.
+
+        A claim is joined to its policy by ``policy_id`` and nothing else - that is the join the
+        Spark job performs (``claims.groupBy("policy_id")``), so the denormalised ``agent_id`` on the
+        claim row must not decide scope here. Using it would drop a claim whose ``agent_id`` is stale
+        or belongs to another agent, while Spark still counts it against the policy: the two paths
+        would disagree on the same input.
+        """
         self.stats.rows_read += 1
-        agent_id = row.get("agent_id", "")
         policy_id = row.get("policy_id", "")
-        if not agent_id or not policy_id or not self._in_scope(agent_id):
+        if not policy_id:
             return False
         policy = self._policies.get(policy_id)
         if policy is None:

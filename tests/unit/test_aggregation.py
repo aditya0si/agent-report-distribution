@@ -195,3 +195,112 @@ def _rows(csv_text: str) -> list[dict[str, str]]:
     import io
 
     return list(csv.DictReader(io.StringIO(csv_text)))
+
+
+class TestCommissionPrecision:
+    """A rate is not money: it must not be rounded to paise before the multiplication.
+
+    The Spark path reads ``commission_rate`` as ``DecimalType(9, 4)``; the chunker used to run it
+    through ``to_decimal`` (2dp), so ``0.0750`` became ``0.08`` and the two paths disagreed on the
+    same input - including on the TOTAL row and the emailed figure.
+    """
+
+    def test_sub_paise_rate_is_not_rounded_before_multiplying(self) -> None:
+        """The reviewer's repro: 99999.99 x 0.0750 = 7499.99925 -> 7500.00, not 8000.00."""
+        aggregator = RawAggregator()
+        aggregator.add_policy_row(
+            {
+                **POLICY_A,
+                "policy_id": "POL-0000000004",
+                "premium": "99999.99",
+                "commission_rate": "0.0750",
+            }
+        )
+        rows = {row["policy_id"]: row for row in _rows(aggregator.report_for("AGT-000001"))}
+        assert rows["POL-0000000004"]["commission"] == "7500.00"
+
+    @pytest.mark.parametrize(
+        "rate, expected",
+        [
+            ("0.0625", "625.00"),  # 10000.00 x 0.0625 - a 2dp rate of 0.06 would give 600.00
+            ("0.1075", "1075.00"),
+            ("0.1575", "1575.00"),
+            ("0.1825", "1825.00"),
+            ("0.07505", "751.00"),  # 5dp input: 4dp HALF_UP (0.0751), matching Spark's cast
+            ("0.074949", "749.00"),  # ... rounds down to 0.0749 at 4dp
+        ],
+    )
+    def test_rates_are_parsed_at_four_decimal_places(self, rate: str, expected: str) -> None:
+        aggregator = RawAggregator()
+        aggregator.add_policy_row(
+            {
+                **POLICY_A,
+                "policy_id": "POL-0000000005",
+                "premium": "10000.00",
+                "commission_rate": rate,
+            }
+        )
+        rows = {row["policy_id"]: row for row in _rows(aggregator.report_for("AGT-000001"))}
+        assert rows["POL-0000000005"]["commission"] == expected
+
+    def test_the_totals_row_carries_the_same_commission(self) -> None:
+        aggregator = RawAggregator()
+        aggregator.add_policy_row(
+            {
+                **POLICY_A,
+                "policy_id": "POL-0000000006",
+                "premium": "99999.99",
+                "commission_rate": "0.0750",
+            }
+        )
+        totals = parse_report_totals(aggregator.report_for("AGT-000001"))
+        assert totals.commission == Decimal("7500.00")
+
+    def test_to_rate_decimal_is_not_the_money_parser(self) -> None:
+        from agent_reports.common.report import to_decimal, to_rate_decimal
+
+        assert to_decimal("0.0750") == Decimal("0.08")
+        assert to_rate_decimal("0.0750") == Decimal("0.0750")
+        assert to_rate_decimal("") == Decimal("0.0000")
+        assert to_rate_decimal(None) == Decimal("0.0000")
+
+
+class TestClaimAttribution:
+    """A claim belongs to the policy it points at - that is the join Spark performs."""
+
+    def test_a_claim_with_a_foreign_agent_id_still_lands_on_its_policy(self) -> None:
+        aggregator = build()
+        assert (
+            aggregator.add_claim_row(
+                {
+                    "policy_id": "POL-0000000002",
+                    "agent_id": "AGT-000002",  # stale/denormalised: not this policy's owner
+                    "claimed_amount": "100.00",
+                    "settled_amount": "0.00",
+                }
+            )
+            is True
+        )
+        rows = {row["policy_id"]: row for row in _rows(aggregator.report_for("AGT-000001"))}
+        assert rows["POL-0000000002"]["claim_count"] == "2"
+        assert aggregator.stats.orphan_claims == 0
+
+    def test_a_claim_for_an_unknown_policy_is_an_orphan(self) -> None:
+        aggregator = build()
+        assert (
+            aggregator.add_claim_row(
+                {
+                    "policy_id": "POL-9999999999",
+                    "agent_id": "AGT-000001",
+                    "claimed_amount": "10.00",
+                    "settled_amount": "0.00",
+                }
+            )
+            is False
+        )
+        assert aggregator.stats.orphan_claims == 1
+
+    def test_a_claim_without_a_policy_id_is_skipped(self) -> None:
+        aggregator = build()
+        assert aggregator.add_claim_row({"agent_id": "AGT-000001"}) is False
+        assert aggregator.stats.orphan_claims == 0

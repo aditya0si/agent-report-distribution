@@ -122,7 +122,14 @@ def _raw_path(raw_uri: str, report_date: str, source: str) -> str:
 
 
 def read_policies(spark: Any, raw_uri: str, report_date: str) -> Any:
-    """Raw policy partitions, typed (no inference pass)."""
+    """Raw policy partitions, typed (no inference pass).
+
+    ``dropDuplicates(["policy_id"])`` is the same de-duplication the chunker performs, and it is
+    what makes an at-least-once replay of a raw partition safe: the chunker keeps the first row it
+    sees for a ``policy_id``, Spark keeps one of the identical copies, and both therefore count the
+    policy once. Without it a replayed partition produced two DETAIL rows for one policy (and a
+    doubled TOTAL) on the Spark path while the chunker stayed correct.
+    """
     from pyspark.sql import functions as F
     from pyspark.sql.types import DecimalType, StringType, StructField, StructType
 
@@ -154,10 +161,12 @@ def read_policies(spark: Any, raw_uri: str, report_date: str) -> Any:
             F.col("premium").cast(DecimalType(18, 2)).alias("premium"),
             F.col("commission_rate").cast(DecimalType(9, 4)).alias("commission_rate"),
         )
+        .dropDuplicates(["policy_id"])
     )
 
 
 def read_agents(spark: Any, raw_uri: str, report_date: str) -> Any:
+    """The day's roster. De-duplicated by ``agent_id`` (the chunker overwrites, so one row wins)."""
     from pyspark.sql.types import StringType, StructField, StructType
 
     schema = StructType(
@@ -176,6 +185,7 @@ def read_agents(spark: Any, raw_uri: str, report_date: str) -> Any:
         .option("header", True)
         .csv(_raw_path(raw_uri, report_date, "agents"))
         .select("agent_id", "agent_name", "region", "branch")
+        .dropDuplicates(["agent_id"])
     )
 
 
@@ -212,7 +222,18 @@ def read_claims(spark: Any, raw_uri: str, report_date: str) -> Any:
 
 
 def aggregate_details(policies: Any, claims: Any, agents: Any) -> Any:
-    """One row per policy with its claim roll-up and commission, typed for formatting."""
+    """One row per policy with its claim roll-up and commission, typed for formatting.
+
+    Two join choices here are load-bearing for byte-identity with the chunker:
+
+    * claims join on ``policy_id`` only. A claim's denormalised ``agent_id`` is ignored on purpose:
+      the chunker attributes a claim to the policy it points at, so using the claim's own
+      ``agent_id`` (a left join that would drop a mismatched claim) would make the two paths disagree
+      on a claim whose ``agent_id`` is stale.
+    * policies join the roster **inner**. The chunker only aggregates agents that appear in the raw
+      ``agents`` partition (its ``planned`` set comes from the roster), so a policy whose agent has no
+      roster row must not produce a report object here either.
+    """
     from pyspark.sql import functions as F
     from pyspark.sql.types import DecimalType
 
@@ -227,7 +248,7 @@ def aggregate_details(policies: Any, claims: Any, agents: Any) -> Any:
     )
     joined = (
         policies.join(claim_totals, on="policy_id", how="left")
-        .join(agents, on="agent_id", how="left")
+        .join(agents, on="agent_id", how="inner")
         .fillna({"claim_count": 0, "claim_amount": 0, "settled_amount": 0})
         .withColumn("claim_count", F.col("claim_count").cast("int"))
         .withColumn(

@@ -42,6 +42,8 @@ __all__ = [
     "parse_report_totals",
     "render_report_csv",
     "summarize_details",
+    "to_decimal",
+    "to_rate_decimal",
 ]
 
 DETAIL = "DETAIL"
@@ -69,6 +71,10 @@ REPORT_COLUMNS: tuple[str, ...] = (
 
 MONEY_PLACES = Decimal("0.01")
 RATIO_PLACES = Decimal("0.0001")
+#: Commission *rates* are not money: rounding them to paise before multiplying silently changes the
+#: commission. The Spark path reads ``commission_rate`` as ``DecimalType(9, 4)``, so the Python path
+#: parses it at the same scale and only rounds the *product*.
+RATE_PLACES = Decimal("0.0001")
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,18 @@ def to_decimal(value: Any) -> Decimal:
     if value is None or value == "":
         return Decimal("0.00")
     return Decimal(str(value)).quantize(MONEY_PLACES, rounding=ROUND_HALF_UP)
+
+
+def to_rate_decimal(value: Any) -> Decimal:
+    """Parse a commission-rate cell into a 4dp Decimal - the same scale Spark reads it at.
+
+    Never use :func:`to_decimal` for a rate: quantising ``0.0750`` to 2dp turns it into ``0.08``
+    before the multiplication, which is a ~7% commission error that the Spark path does not make
+    (it casts the column to ``DecimalType(9, 4)``). Rounding happens once, on the product.
+    """
+    if value is None or value == "":
+        return Decimal("0.0000")
+    return Decimal(str(value)).quantize(RATE_PLACES, rounding=ROUND_HALF_UP)
 
 
 def format_money(value: Decimal | float | int | str | None) -> str:
