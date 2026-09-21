@@ -10,11 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .common.aws import cloudwatch_client, ses_client, sqs_client
+from .common.aws import ses_client, sqs_client
 from .common.keys import parse_report_key, report_key, validate_report_date
 from .common.logging_utils import configure_logging, get_logger
 from .common.settings import Settings
@@ -95,6 +95,7 @@ class PipelineResult:
     objects_written: int = 0
     metrics_emitted: int = 0
     metric_names: list[str] = field(default_factory=list)
+    metric_identities: list[str] = field(default_factory=list)
     log_events: dict[str, int] = field(default_factory=dict)
     queue_drained: bool = False
     duration_seconds: float = 0.0
@@ -122,6 +123,7 @@ class PipelineResult:
             "objects_written": self.objects_written,
             "metrics_emitted": self.metrics_emitted,
             "metric_names": self.metric_names,
+            "metric_identities": self.metric_identities,
             "log_events": self.log_events,
             "queue_drained": self.queue_drained,
             "duration_seconds": round(self.duration_seconds, 3),
@@ -229,6 +231,7 @@ class _TelemetryCapture(logging.Handler):
         super().__init__()
         self.metric_documents: list[dict[str, Any]] = []
         self.metric_names: list[str] = []
+        self.metric_identities: set[str] = set()
         self.events: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -239,10 +242,19 @@ class _TelemetryCapture(logging.Handler):
                 return
             self.metric_documents.append(document)
             for entry in document.get("_aws", {}).get("CloudWatchMetrics", []):
-                for metric in entry.get("Metrics", []):
-                    name = str(metric.get("Name", ""))
+                namespace = str(entry.get("Namespace", ""))
+                names = [str(metric.get("Name", "")) for metric in entry.get("Metrics", [])]
+                for name in names:
                     if name and name not in self.metric_names:
                         self.metric_names.append(name)
+                for dimension_names in entry.get("Dimensions", []):
+                    label = ",".join(
+                        f"{dimension}={document.get(dimension, '')}"
+                        for dimension in sorted(dimension_names)
+                    )
+                    for name in names:
+                        if name:
+                            self.metric_identities.add(f"{namespace}/{name}{{{label}}}")
             return
         event = record.__dict__.get("event")
         if isinstance(event, str):
@@ -289,7 +301,7 @@ def run_local_pipeline(
     zones: Zones | None = None,
     sqs: Any = None,
     ses: Any = None,
-    cloudwatch: Any = None,
+    before_dispatch: Callable[[Zones, str], Any] | None = None,
 ) -> PipelineResult:
     """Run the whole pipeline once and report what happened.
 
@@ -297,13 +309,16 @@ def run_local_pipeline(
     orchestrator fan-out -> dispatcher batches until the queue drains. Retryable failures are left
     on the queue exactly as SQS would, so a poison message ends up in the DLQ after
     ``maxReceiveCount`` receives.
+
+    ``before_dispatch`` is a seam for the offline runner: ``scripts/e2e_local.py`` uses it to verify
+    every roster recipient with SES (the sandbox requirement) between aggregation and the first
+    send. Production callers pass nothing.
     """
     validate_report_date(options.report_date)
     started = time.perf_counter()
     active_zones = zones or open_zones(settings)
     active_sqs = sqs or sqs_client(settings)
     active_ses = ses or ses_client(settings)
-    active_cw = cloudwatch or cloudwatch_client(settings)
     queue_url = settings.require_queue()
     result = PipelineResult(report_date=options.report_date)
 
@@ -325,7 +340,6 @@ def run_local_pipeline(
                     shard_count=max(1, options.shards),
                     zones=active_zones,
                     emit_metrics=True,
-                    cloudwatch=active_cw,
                 )
             )
         result.stages["aggregate"] = time.perf_counter() - stage_started
@@ -338,13 +352,18 @@ def run_local_pipeline(
             report_date=options.report_date,
             zones=active_zones,
             sqs=active_sqs,
-            cloudwatch=active_cw,
         )
         result.stages["fanout"] = time.perf_counter() - stage_started
         result.agents_discovered = fanout.agents_discovered
         result.messages_enqueued = fanout.messages_enqueued
         result.manifest_key = fanout.manifest_uri
         result.failed_agents = list(fanout.failed_agent_ids)
+
+        if before_dispatch is not None:
+            result.stages["before_dispatch"] = 0.0
+            hook_started = time.perf_counter()
+            before_dispatch(active_zones, options.report_date)
+            result.stages["before_dispatch"] = time.perf_counter() - hook_started
 
         stage_started = time.perf_counter()
         batches = 0
@@ -364,7 +383,6 @@ def run_local_pipeline(
                 records=records,
                 zones=active_zones,
                 ses=active_ses,
-                cloudwatch=active_cw,
             )
             result.emails_sent += batch.sent
             result.duplicates += batch.duplicates
@@ -392,6 +410,7 @@ def run_local_pipeline(
         result.objects_written = _count_objects(active_zones)
         result.metrics_emitted = len(telemetry.metric_documents)
         result.metric_names = list(telemetry.metric_names)
+        result.metric_identities = sorted(telemetry.metric_identities)
         events: dict[str, int] = {}
         for name in telemetry.events:
             events[name] = events.get(name, 0) + 1

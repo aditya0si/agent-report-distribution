@@ -50,6 +50,13 @@ resource "aws_cloudwatch_log_metric_filter" "dispatcher_failures" {
     value         = "1"
     default_value = "0"
     unit          = "Count"
+    # The dimension set is part of the metric's identity: the alarm below reads
+    # AgentReports/DispatchFailures{Service=dispatcher}, so the filter has to publish exactly that.
+    # Without this block the filter published the metric with *no* dimensions, the alarm's datapoint
+    # never existed, and treat_missing_data kept the alarm green forever.
+    dimensions = {
+      Service = "dispatcher"
+    }
   }
 }
 
@@ -59,11 +66,14 @@ resource "aws_cloudwatch_log_metric_filter" "batch_item_failures" {
   pattern        = "{ $.event = \"dispatcher_batch_completed\" && $.batch_item_failures > 0 }"
 
   metric_transformation {
-    name          = "BatchItemFailures"
+    name          = "BatchItemFailuresFromLogs"
     namespace     = "AgentReports"
     value         = "$.batch_item_failures"
     default_value = "0"
     unit          = "Count"
+    dimensions = {
+      Service = "dispatcher"
+    }
   }
 }
 
@@ -78,6 +88,9 @@ resource "aws_cloudwatch_log_metric_filter" "quarantined_messages" {
     value         = "1"
     default_value = "0"
     unit          = "Count"
+    dimensions = {
+      Service = "dispatcher"
+    }
   }
 }
 
@@ -92,6 +105,9 @@ resource "aws_cloudwatch_log_metric_filter" "emails_sent" {
     value         = "$.sent"
     default_value = "0"
     unit          = "Count"
+    dimensions = {
+      Service = "dispatcher"
+    }
   }
 }
 
@@ -106,6 +122,9 @@ resource "aws_cloudwatch_log_metric_filter" "fanout_completed" {
     value         = "$.messages_enqueued"
     default_value = "0"
     unit          = "Count"
+    dimensions = {
+      Service = "orchestrator"
+    }
   }
 }
 
@@ -182,19 +201,49 @@ resource "aws_cloudwatch_metric_alarm" "report_lag" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "emails_not_sent" {
-  alarm_name          = "${var.name_prefix}-no-emails-sent"
-  alarm_description   = "A fan-out ran but nothing was delivered - SES or the reports zone is broken."
-  namespace           = "AgentReports"
-  metric_name         = "MessagesEnqueued"
-  statistic           = "Sum"
+  alarm_name        = "${var.name_prefix}-no-emails-sent"
+  alarm_description = "A fan-out enqueued messages and nothing was delivered all day: SES or the reports zone is broken."
+
   comparison_operator = "GreaterThanThreshold"
   threshold           = 0
-  period              = 86400
   evaluation_periods  = 1
   treat_missing_data  = "notBreaching"
 
-  dimensions = {
-    Service = "orchestrator"
+  # "A fan-out ran but nothing was delivered" is a statement about *two* metrics, so it has to be a
+  # metric-math alarm. The previous version alarmed on MessagesEnqueued > 0, which is true on every
+  # successful day - it would have paged on success. It also referenced {Service=orchestrator}, a
+  # dimension set the handlers did not publish, so it could never have fired at all.
+  metric_query {
+    id          = "enqueued"
+    return_data = false
+
+    metric {
+      namespace   = "AgentReports"
+      metric_name = "MessagesEnqueued"
+      stat        = "Sum"
+      period      = 86400
+      dimensions  = { Service = "orchestrator" }
+    }
+  }
+
+  metric_query {
+    id          = "delivered"
+    return_data = false
+
+    metric {
+      namespace   = "AgentReports"
+      metric_name = "EmailsSent"
+      stat        = "Sum"
+      period      = 86400
+      dimensions  = { Service = "dispatcher" }
+    }
+  }
+
+  metric_query {
+    id          = "nothing_delivered"
+    expression  = "IF(AND(enqueued > 0, delivered == 0), 1, 0)"
+    label       = "fan-out ran, nothing delivered"
+    return_data = true
   }
 
   alarm_actions = [aws_sns_topic.alarms.arn]

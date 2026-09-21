@@ -11,14 +11,14 @@ from __future__ import annotations
 import csv
 import io
 import json
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import pytest
 
-from agent_reports.common.aws import cloudwatch_client, sqs_client
+from agent_reports.common.aws import ses_client, sqs_client
 from agent_reports.common.keys import manifest_key, parse_report_key, report_key
-from agent_reports.common.report import parse_report_totals
+from agent_reports.common.report import parse_report_totals, to_decimal, to_rate_decimal
 from agent_reports.common.roster import iter_source_rows, report_agent_ids
 from agent_reports.common.settings import Settings
 from agent_reports.common.storage import Zones
@@ -31,7 +31,7 @@ from agent_reports.pipeline import (
     receive_records,
     run_local_pipeline,
 )
-from agent_reports.testing import sent_messages, verify_presigned_delivery
+from agent_reports.testing import sent_messages, verify_presigned_delivery, verify_roster_recipients
 
 REPORT_DATE = "2026-09-20"
 POISON_AGENT = "AGT-999999"
@@ -99,14 +99,34 @@ class TestEndToEnd:
         assert "DispatchLatencyMs" in names
         assert "ReportAgeSeconds" in names
 
-    def test_cloudwatch_received_the_datapoints(
+    def test_published_metric_identities_are_the_operational_ones(
         self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
     ) -> None:
-        aws, _, _ = pipeline_run
-        metrics = cloudwatch_client(aws).list_metrics(Namespace="AgentReports")["Metrics"]
-        names = {metric["MetricName"] for metric in metrics}
-        assert {"EmailsSent", "ReportsWritten", "AgentsDiscovered", "MessagesEnqueued"} <= names
-        assert any(metric["Dimensions"] for metric in metrics)
+        """Every metric the pipeline publishes, with the exact dimension set it publishes it under.
+
+        The pipeline publishes through EMF **only** - a metric is identified by namespace + name +
+        full dimension set, so also writing the same identity through ``PutMetricData`` would double
+        every ``Sum`` that the alarms and the dashboard read. This is the set CloudWatch sees, and
+        ``tests/unit/test_terraform_config.py`` checks it against what Terraform references.
+        """
+        _, _, result = pipeline_run
+        identities = set(result["metric_identities"])
+        assert {
+            "AgentReports/ReportsWritten{Service=chunker}",
+            "AgentReports/RowsIn{Service=chunker}",
+            "AgentReports/AgentsDiscovered{Service=orchestrator}",
+            "AgentReports/MessagesEnqueued{Service=orchestrator}",
+            "AgentReports/BatchItemFailures{Service=orchestrator}",
+            "AgentReports/EmailsSent{Service=dispatcher}",
+            "AgentReports/EmailsFailed{Service=dispatcher}",
+            "AgentReports/DuplicatesSuppressed{Service=dispatcher}",
+            "AgentReports/BatchItemFailures{Service=dispatcher}",
+            "AgentReports/DispatchLatencyMs{Service=dispatcher}",
+            "AgentReports/ReportAgeSeconds{Service=dispatcher}",
+        } <= identities
+        # No per-day dimension anywhere: that costs a metric-month per day per metric and cannot be
+        # alarmed on, because an alarm cannot wildcard a dimension value. See docs/COST.md.
+        assert all("ReportDate" not in identity for identity in identities), sorted(identities)
 
     def test_ses_captured_exactly_one_message_per_agent(
         self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
@@ -119,6 +139,23 @@ class TestEndToEnd:
         for message in messages:
             assert message.source == aws.ses_sender
             assert str(message.subject).startswith(f"Agent report {REPORT_DATE}")
+
+    def test_the_offline_path_verifies_every_recipient_it_targets(
+        self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
+    ) -> None:
+        """M11: the e2e verified 200 recipients while emailing 381 agents.
+
+        moto does not enforce the SES sandbox rule (a send to an unverified address succeeds
+        offline), so this test pins the *rehearsal*: every address the run targets is verified before
+        the first send. On real AWS an unverified recipient is a MessageRejected.
+        """
+        aws, zones, result = pipeline_run
+        verified = verify_roster_recipients(aws, zones, REPORT_DATE)
+        assert len(verified) == result["agents_discovered"]
+        assert len(verified) >= result["emails_sent"]
+        identities = set(ses_client(aws).list_identities()["Identities"])
+        assert set(verified) <= identities
+        assert aws.ses_sender in identities
 
     def test_every_report_object_has_the_expected_shape(
         self, pipeline_run: tuple[Settings, Zones, dict[str, Any]]
@@ -207,8 +244,8 @@ class TestReportCorrectness:
         expected_premium = sum((Decimal(row["premium"]) for row in policies.values()), Decimal("0"))
         expected_commission = sum(
             (
-                (Decimal(row["premium"]) * Decimal(row["commission_rate"])).quantize(
-                    Decimal("0.01")
+                (to_decimal(row["premium"]) * to_rate_decimal(row["commission_rate"])).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
                 for row in policies.values()
             ),

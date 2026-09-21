@@ -24,7 +24,7 @@ from typing import Any
 from ..common.aggregation import RawAggregator
 from ..common.keys import report_key, validate_report_date
 from ..common.logging_utils import configure_logging, get_logger, log_event
-from ..common.metrics import METRIC_NAMES, Metric, emit_emf, put_metric_data
+from ..common.metrics import METRIC_NAMES, Metric, emit_emf
 from ..common.roster import iter_source_rows, plan_shards, read_roster
 from ..common.settings import Settings, load_settings
 from ..common.storage import Zones, open_zones
@@ -52,6 +52,7 @@ class ChunkerResult:
     claims: int = 0
     bytes_written: int = 0
     duration_seconds: float = 0.0
+    emr_routing_advised: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +70,7 @@ class ChunkerResult:
             "claims": self.claims,
             "bytes_written": self.bytes_written,
             "duration_seconds": round(self.duration_seconds, 3),
+            "emr_routing_advised": self.emr_routing_advised,
         }
 
 
@@ -81,7 +83,6 @@ def run_chunker(
     agent_ids: Sequence[str] | None = None,
     zones: Zones | None = None,
     emit_metrics: bool = True,
-    cloudwatch: Any = None,
 ) -> ChunkerResult:
     """Aggregate the day's raw partitions into per-agent reports."""
     validate_report_date(report_date)
@@ -128,15 +129,36 @@ def run_chunker(
 
     result.agents_reported = result.reports_written
     result.duration_seconds = time.perf_counter() - started
+    # AGENT_REPORTS_EMR_ROW_THRESHOLD is the documented free-tier-vs-scale routing threshold: past it
+    # the day belongs on the EMR/Spark path. Nothing switches paths automatically (the chunker still
+    # produced a correct result here - see the capacity guardrail for the hard limit), so the signal
+    # is an explicit, greppable event an operator can alarm on.
+    result.emr_routing_advised = result.rows_read > settings.emr_row_threshold
 
     log_event(
         _LOG,
         "chunker_completed",
         **{k: v for k, v in result.as_dict().items() if k != "report_keys"},
     )
+    if result.emr_routing_advised:
+        log_event(
+            _LOG,
+            "emr_routing_advised",
+            level=30,
+            report_date=report_date,
+            rows_read=result.rows_read,
+            emr_row_threshold=settings.emr_row_threshold,
+            detail=(
+                "the day is above AGENT_REPORTS_EMR_ROW_THRESHOLD; route it to the EMR Serverless "
+                "path (enable_emr_module) instead of the Lambda chunker"
+            ),
+        )
 
     if emit_metrics:
-        dimensions = {"Service": "chunker", "ReportDate": report_date}
+        # The report date is a *property*, not a dimension: a per-day dimension would create one
+        # billable metric-month per day for every metric (see docs/COST.md) and would make the
+        # metric un-alarmable, because an alarm cannot wildcard a dimension value.
+        dimensions = {"Service": "chunker"}
         emit_emf(
             [
                 Metric(METRIC_NAMES["reports_written"], float(result.reports_written)),
@@ -144,16 +166,8 @@ def run_chunker(
                 Metric(METRIC_NAMES["agents_discovered"], float(result.agents_planned)),
             ],
             dimensions,
+            properties={"ReportDate": report_date},
         )
-        if cloudwatch is not None:
-            put_metric_data(
-                cloudwatch,
-                [
-                    Metric(METRIC_NAMES["reports_written"], float(result.reports_written)),
-                    Metric(METRIC_NAMES["rows_in"], float(result.rows_in_scope)),
-                ],
-                dimensions,
-            )
 
     return result
 
@@ -178,6 +192,5 @@ def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
         shard_count=shard_count,
         agent_ids=agent_ids,
         zones=open_zones(settings),
-        cloudwatch=None,
     )
     return result.as_dict()

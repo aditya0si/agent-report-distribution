@@ -1,13 +1,18 @@
-"""CloudWatch metrics: Embedded Metric Format (EMF) plus a direct ``PutMetricData`` path.
+"""CloudWatch metrics: Embedded Metric Format (EMF) is the pipeline's **single** publish path.
 
 EMF is the cheap path - the Lambda writes one structured log line and CloudWatch Logs extracts the
-metric, so there is no API call on the hot path and no IAM permission needed. The direct
-``put_metric_data`` path is kept for values that must be published even when the log line is not
-shipped (e.g. the orchestrator's fan-out counters) and for local runs where a test wants to read the
-metric back through the CloudWatch API.
+metric, so there is no API call on the hot path and no IAM permission needed for it.
+
+:func:`put_metric_data` exists as the API equivalent and is used where EMF cannot be: a caller
+outside CloudWatch Logs (LocalStack, a script) can publish and read a datapoint back. What it must
+**not** be used for is publishing the same metric the handlers already publish as EMF: a CloudWatch
+metric is identified by namespace + name + the *full* dimension set, so emitting both shapes the same
+identity twice and doubles every ``Sum`` that alarms and dashboards read.
 
 Metric names used across the pipeline live in :data:`METRIC_NAMES` so dashboards, alarms
-(``infra/terraform/cloudwatch.tf``) and code cannot drift apart.
+(``infra/terraform/cloudwatch.tf``) and code cannot drift apart. The dimension sets are equally
+load-bearing, and ``tests/unit/test_terraform_config.py`` asserts that every dimension set the
+Terraform alarms and dashboard reference is one this package actually emits.
 """
 
 from __future__ import annotations

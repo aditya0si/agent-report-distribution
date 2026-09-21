@@ -7,6 +7,7 @@ import json
 import pytest
 
 from agent_reports.common.settings import Settings
+from agent_reports.common.storage import Zones
 from agent_reports.pipeline import PipelineOptions, queue_depth, receive_records, run_local_pipeline
 
 
@@ -100,6 +101,41 @@ class TestPipelineOptions:
     def test_explicit_agent_count_wins(self) -> None:
         config = PipelineOptions(report_date="2026-09-20", agents=7).dataset_config()
         assert config.agents == 7
+
+
+class TestEmrRoutingThreshold:
+    """``AGENT_REPORTS_EMR_ROW_THRESHOLD`` used to be documented and never read."""
+
+    def test_the_emr_routing_threshold_is_read(
+        self, aws: Settings, zones: Zones, small_dataset: dict[str, int]
+    ) -> None:
+        from dataclasses import replace
+
+        from agent_reports.lambda_handlers.chunker import run_chunker
+        from agent_reports.pipeline import capture_telemetry
+
+        assert small_dataset["rows_total"] > 0
+        with capture_telemetry() as telemetry:
+            quiet = run_chunker(
+                replace(aws, emr_row_threshold=10_000),
+                report_date="2026-09-20",
+                zones=zones,
+                emit_metrics=False,
+            )
+        assert quiet.rows_read > 0
+        assert quiet.emr_routing_advised is False
+        assert quiet.as_dict()["emr_routing_advised"] is False
+        assert "emr_routing_advised" not in telemetry.events
+
+        with capture_telemetry() as telemetry:
+            loud = run_chunker(
+                replace(aws, emr_row_threshold=1),
+                report_date="2026-09-20",
+                zones=zones,
+                emit_metrics=False,
+            )
+        assert loud.emr_routing_advised is True
+        assert "emr_routing_advised" in telemetry.events
 
 
 @pytest.mark.parametrize("report_date", ["20-09-2026", ""])

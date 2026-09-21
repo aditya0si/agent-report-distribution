@@ -33,6 +33,7 @@ help:
 	@echo "coverage     pytest with a coverage gate"
 	@echo "e2e          scripts/e2e_local.py - whole pipeline offline, prints the report"
 	@echo "demo         generate a 50k-row day and run the offline end-to-end"
+	@echo "cost         recompute the docs/COST.md estimate from live AWS prices"
 	@echo "tf-validate  terraform fmt -check + init -backend=false + validate"
 	@echo "all          lint typecheck test tf-validate e2e"
 
@@ -67,6 +68,10 @@ e2e:
 demo:
 	$(PYTHON) -m agent_reports.ingest.cli --out data/raw --report-date 2026-09-20 --rows 50000
 	$(PYTHON) scripts/e2e_local.py --rows 5000 --shards 2 --json
+
+.PHONY: cost
+cost:
+	$(PYTHON) scripts/cost_model.py
 
 .PHONY: tf-validate
 tf-validate:

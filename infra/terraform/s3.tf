@@ -2,6 +2,10 @@
 #   raw       - landed daily, replayed for 30 days, then cheap storage, then gone
 #   processed - run manifests + idempotency markers: small, kept for a year (audit trail)
 #   reports   - per-agent CSVs: the objects agents download; short-lived by design
+#
+# Tiering is only applied where the objects are larger than the 128 KB minimum that the
+# infrequent-access classes bill: the raw part files qualify (~500 KB each), the per-agent reports
+# (~1.4 KB) and the dispatch markers (~400 B) do not - tiering those *increases* the bill.
 
 resource "aws_s3_bucket" "raw" {
   bucket        = local.raw_bucket
@@ -122,11 +126,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "processed" {
       prefix = local.state_prefix
     }
 
-    transition {
-      days          = 90
-      storage_class = "STANDARD_IA"
-    }
-
+    # No STANDARD_IA transition here on purpose: a dispatch marker is a few hundred bytes and S3
+    # bills a 128 KB minimum per object in the infrequent-access classes, so tiering 4,000 markers a
+    # day *increases* the bill (see docs/COST.md). Expiry is the only lever that helps.
     expiration {
       days = 365
     }
@@ -195,11 +197,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "reports" {
       prefix = local.reports_prefix
     }
 
-    transition {
-      days          = 14
-      storage_class = "STANDARD_IA"
-    }
-
+    # No STANDARD_IA transition on purpose. A per-agent report is ~1.4 KB, and the infrequent-access
+    # classes bill a 128 KB minimum per object: tiering 4,000 reports a day would bill 61 GB-month
+    # instead of 0.7 GB-month (and add a transition request per object) to save nothing, because the
+    # objects expire 120 days later anyway. See docs/COST.md for the arithmetic.
     expiration {
       days = 120
     }

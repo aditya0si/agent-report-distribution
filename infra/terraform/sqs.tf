@@ -37,8 +37,11 @@ resource "aws_sqs_queue_redrive_allow_policy" "fanout_dlq" {
   })
 }
 
-# The queue is only writable by the orchestrator role and only readable by the dispatcher role;
-# an explicit queue policy keeps a compromised unrelated principal out.
+# The queue policy denies insecure transport for everyone. The read/write split between the two
+# roles is enforced by their IAM policies, not by this resource: the orchestrator role has
+# sqs:SendMessage and the dispatcher role has sqs:ReceiveMessage/DeleteMessage (see iam.tf), and
+# neither can do the other's job. An explicit queue policy adds the one thing IAM cannot express -
+# "no caller, however privileged, may use this queue over plain HTTP".
 data "aws_iam_policy_document" "fanout_queue" {
   statement {
     sid    = "DenyInsecureTransport"

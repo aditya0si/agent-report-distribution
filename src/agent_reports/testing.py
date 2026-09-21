@@ -24,6 +24,7 @@ __all__ = [
     "provision_local_resources",
     "sent_messages",
     "verify_presigned_delivery",
+    "verify_roster_recipients",
 ]
 
 
@@ -94,6 +95,29 @@ def sent_messages(region: str) -> list[Any]:
     account = next(iter(ses_backends.values()))
     backend = account[region]
     return list(backend.sent_messages)
+
+
+def verify_roster_recipients(settings: Settings, zones: Zones, report_date: str) -> list[str]:
+    """Verify every agent email in the day's roster with SES, and return the addresses.
+
+    The SES sandbox only delivers to verified identities, so a production run needs every agent
+    address verified until production access is granted. This makes the offline run do the same
+    thing for every recipient it is about to email - with the honest caveat that **moto does not
+    enforce the rule**: a send to an unverified address succeeds offline, so this is a rehearsal of
+    the sandbox requirement, not a test that it is enforced. ``scripts/e2e_local.py`` prints the
+    count so the two can never silently disagree again.
+    """
+    from .common.roster import read_roster
+
+    ses = boto3.client("ses", region_name=settings.region, endpoint_url=settings.endpoint_url)
+    addresses: set[str] = set()
+    for row in read_roster(zones.raw, report_date).values():
+        address = str(row.get("email", "") or "")
+        if not address:
+            continue
+        ses.verify_email_identity(EmailAddress=address)
+        addresses.add(address)
+    return sorted(addresses)
 
 
 def verify_presigned_delivery(

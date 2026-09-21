@@ -4,6 +4,12 @@
 pipeline needs - lifecycle transitions on every zone, a real redrive policy, log retention, the
 metric filters and alarms that back the runbook playbooks, and no wildcard IAM actions.
 
+The observability tests go further than "the alarm exists": every metric identity an alarm or the
+dashboard reads is checked against the identities the handlers actually publish (captured from a real
+moto run in :func:`published_metric_identities`), because a metric is identified by namespace + name +
+the *full* dimension set - an alarm on a dimension set nobody publishes is an alarm that can never
+fire.
+
 Parsing is done with ``python-hcl2`` so the tests run everywhere; when the Terraform CLI is present
 the same files are additionally checked with ``terraform fmt -check``/``validate`` (see the Makefile
 ``tf-validate`` target and VERIFY.md).
@@ -12,12 +18,15 @@ the same files are additionally checked with ``terraform fmt -check``/``validate
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+# hcl2 is imported loudly, not with pytest.importorskip: python-hcl2 is a declared dev dependency
+# (requirements-dev.txt) and CI installs it, so a missing module is a broken environment - skipping
+# the whole Terraform suite would hide exactly the drift these tests exist to catch.
+import hcl2
 import pytest
-
-hcl2 = pytest.importorskip("hcl2")
 
 TF_DIR = Path(__file__).resolve().parents[2] / "infra" / "terraform"
 
@@ -122,6 +131,50 @@ def emr_module() -> dict[str, Any]:
     return load(emr_module_path())
 
 
+@pytest.fixture(scope="module")
+def published_metric_identities() -> set[str]:
+    """Every metric identity this package publishes, captured from a real moto run.
+
+    Running the pipeline is the point: the identities come from the handlers' own EMF documents, so
+    the Terraform checks below cannot drift away from what the code emits.
+    """
+    from dataclasses import replace
+
+    from moto import mock_aws
+
+    from agent_reports.common.aws import reset_client_cache
+    from agent_reports.common.settings import Settings
+    from agent_reports.pipeline import PipelineOptions, run_local_pipeline
+    from agent_reports.testing import provision_local_resources
+
+    settings = Settings(
+        region="us-east-1",
+        raw_bucket="agent-reports-raw",
+        processed_bucket="agent-reports-processed",
+        reports_bucket="agent-reports-out",
+        agent_queue_url="https://sqs.us-east-1.amazonaws.com/000000000000/agent-reports-fanout",
+        dlq_url="https://sqs.us-east-1.amazonaws.com/000000000000/agent-reports-fanout-dlq",
+        ses_sender="reports@example.com",
+        ses_configuration_set="agent-reports",
+        presign_ttl_seconds=900,
+        report_date="2026-09-20",
+    ).validate()
+    with mock_aws():
+        created = provision_local_resources(settings, verify_recipients=4)
+        resolved = replace(
+            settings,
+            agent_queue_url=created["main_queue_url"],
+            dlq_url=created["dlq_url"],
+        )
+        reset_client_cache()
+        result = run_local_pipeline(
+            resolved,
+            PipelineOptions(report_date="2026-09-20", agents=3, shards=1),
+        )
+    assert result.emails_sent == 3, result.as_dict()
+    return set(result.metric_identities)
+
+
 def resources(stack: dict[str, Any], kind: str) -> dict[str, Any]:
     return cast(dict[str, Any], group(stack, "resource").get(kind, {}))
 
@@ -138,6 +191,97 @@ def find(stack: dict[str, Any], kind: str, name_contains: str) -> dict[str, Any]
     matches = {name: body for name, body in resources(stack, kind).items() if name_contains in name}
     assert matches, f"no {kind} matching {name_contains!r}"
     return next(iter(matches.values()))
+
+
+# --------------------------------------------------------------------------- metric identities
+def merged_block(value: Any) -> dict[str, Any]:
+    """hcl2 renders a block as a list of single-key dicts; merge it (and pass dicts through)."""
+    if isinstance(value, list):
+        merged: dict[str, Any] = {}
+        for entry in value:
+            if isinstance(entry, dict):
+                merged.update(entry)
+        return merged
+    return value if isinstance(value, dict) else {}
+
+
+def dimension_map(value: Any) -> dict[str, str]:
+    """A ``dimensions``/``dimensions = {...}`` block as plain ``{str: str}``."""
+    return {normalise_key(key): str(normalise(item)) for key, item in merged_block(value).items()}
+
+
+def metric_identity(namespace: str, name: str, dimensions: Mapping[str, str]) -> str:
+    """``Namespace/Name{Dim=Value,...}`` - how CloudWatch identifies a metric."""
+    label = ",".join(f"{key}={dimensions[key]}" for key in sorted(dimensions))
+    return f"{namespace}/{name}{{{label}}}"
+
+
+def alarm_metric_references(alarm: dict[str, Any]) -> list[str]:
+    """Every metric identity an alarm reads, single-metric or metric-math."""
+    references: list[str] = []
+    if alarm.get("metric_name"):
+        references.append(
+            metric_identity(
+                str(alarm.get("namespace", "")),
+                str(alarm["metric_name"]),
+                dimension_map(alarm.get("dimensions")),
+            )
+        )
+    for query in alarm.get("metric_query") or []:
+        metric = merged_block(query).get("metric")
+        if metric is None:
+            continue
+        body = merged_block(metric)
+        references.append(
+            metric_identity(
+                str(normalise(body.get("namespace", ""))),
+                str(normalise(body.get("metric_name", ""))),
+                dimension_map(body.get("dimensions")),
+            )
+        )
+    return references
+
+
+#: ``["Namespace", "MetricName", "Dimension", value]`` - the shape every dashboard metric uses.
+_DASHBOARD_REFERENCE_RE = re.compile(
+    r'\[\s*"(?P<namespace>[A-Za-z0-9/_.-]+)"\s*,\s*"(?P<metric>[A-Za-z0-9/_.-]+)"\s*,'
+    r'\s*"(?P<dimension>[A-Za-z0-9/_.-]+)"\s*,\s*(?P<value>"[^"]*"|[^\]\s]+)\s*\]'
+)
+
+
+def dashboard_metric_references() -> list[str]:
+    """Every metric identity the dashboard widget definitions read, parsed from the raw HCL.
+
+    The dashboard body is one ``jsonencode({...})`` expression, which ``python-hcl2`` hands back as an
+    opaque string, so the references are read from the file text instead of the parsed document.
+    """
+    text = (TF_DIR / "cloudwatch.tf").read_text(encoding="utf-8")
+    references: list[str] = []
+    for match in _DASHBOARD_REFERENCE_RE.finditer(text):
+        value = match.group("value").strip().strip('"')
+        references.append(
+            metric_identity(
+                match.group("namespace"),
+                match.group("metric"),
+                {match.group("dimension"): value},
+            )
+        )
+    return references
+
+
+def filter_metric_identities(stack: dict[str, Any]) -> set[str]:
+    """Identities published by the CloudWatch log metric filters (namespace + name + dimensions)."""
+    identities: set[str] = set()
+    for body in resources(stack, "aws_cloudwatch_log_metric_filter").values():
+        transform = flatten(body["metric_transformation"])
+        identities.add(
+            metric_identity(
+                str(transform["namespace"]),
+                str(transform["name"]),
+                dimension_map(transform.get("dimensions")),
+            )
+        )
+    return identities
 
 
 class TestBuckets:
@@ -162,17 +306,27 @@ class TestBuckets:
         assert transitions == {"STANDARD_IA": 30, "GLACIER_IR": 90}
         assert rule["expiration"][0]["days"] == 400
         assert rule["noncurrent_version_expiration"][0]["noncurrent_days"] == 60
+        # Tiering is only worth it above the 128 KB infrequent-access minimum; the raw part files
+        # (~500 KB each) are, and this is the only zone where a transition is declared.
+        for zone in ("processed", "reports"):
+            for other in find(stack, "aws_s3_bucket_lifecycle_configuration", zone)["rule"]:
+                assert "transition" not in other, (zone, other["id"])
 
     def test_reports_zone_expires(self, stack: dict[str, Any]) -> None:
         rule = find(stack, "aws_s3_bucket_lifecycle_configuration", "reports")["rule"][0]
         assert rule["expiration"][0]["days"] == 120
         assert rule["noncurrent_version_expiration"][0]["noncurrent_days"] == 7
+        # A ~1.4 KB report billed at the 128 KB infrequent-access minimum costs ~50x more per month
+        # than it does in Standard, so the zone must not tier. See docs/COST.md.
+        assert "transition" not in rule
 
     def test_processed_zone_keeps_state_for_a_year(self, stack: dict[str, Any]) -> None:
         lifecycle = find(stack, "aws_s3_bucket_lifecycle_configuration", "processed")
         rules = {rule["id"]: rule for rule in lifecycle["rule"]}
         assert rules["state-retention"]["expiration"][0]["days"] == 365
         assert rules["quarantine-short-retention"]["expiration"][0]["days"] == 90
+        # Dispatch markers are ~400 B: same 128 KB minimum, same reason not to tier.
+        assert "transition" not in rules["state-retention"]
 
 
 class TestQueues:
@@ -248,6 +402,37 @@ class TestLambdas:
             == "apigateway.amazonaws.com"
         )
 
+    def test_the_presign_route_carries_a_jwt_authorizer_when_one_is_configured(
+        self, stack: dict[str, Any]
+    ) -> None:
+        """The route must not be a bare, unauthenticated integration.
+
+        With ``presign_jwt_issuer`` set the route is JWT-authorised by the gateway; with the default
+        empty issuer it is explicitly ``NONE`` *and* the function's header fallback is off, so an
+        anonymous request is a 401 rather than another agent's report (see the handler tests).
+        """
+        route = find(stack, "aws_apigatewayv2_route", "get_report")
+        assert route["authorization_type"] == 'local.presign_jwt_enabled ? "JWT" : "NONE"'
+        assert "aws_apigatewayv2_authorizer.presign_jwt" in route["authorizer_id"]
+
+        authorizer = find(stack, "aws_apigatewayv2_authorizer", "presign_jwt")
+        assert authorizer["authorizer_type"] == "JWT"
+        assert authorizer["count"] == "local.presign_jwt_enabled ? 1 : 0"
+        configuration = merged_block(authorizer["jwt_configuration"])
+        assert str(normalise(configuration["issuer"])) == "var.presign_jwt_issuer"
+        assert str(normalise(configuration["audience"])) == "var.presign_jwt_audience"
+        assert str(normalise(block(stack, "locals")["presign_jwt_enabled"])) == (
+            'var.presign_jwt_issuer != ""'
+        )
+
+    def test_the_deployed_environment_never_enables_the_header_identity_fallback(
+        self, stack: dict[str, Any]
+    ) -> None:
+        """``X-Caller-Agent-Id`` is spoofable, so the stack must not turn the fallback on."""
+        environment = block(stack, "locals")["environment_variables"]
+        assert "AGENT_REPORTS_ALLOW_CALLER_HEADER_FALLBACK" not in environment
+        assert variables(stack)["presign_jwt_issuer"]["default"] == ""
+
 
 class TestIam:
     def test_no_wildcard_actions_anywhere(self, stack: dict[str, Any]) -> None:
@@ -313,6 +498,100 @@ class TestObservability:
 
     def test_dashboard_exists(self, stack: dict[str, Any]) -> None:
         assert "pipeline" in resources(stack, "aws_cloudwatch_dashboard")
+
+    # ------------------------------------------------------------------ identity checks
+    def test_every_agent_reports_alarm_metric_is_a_published_identity(
+        self, stack: dict[str, Any], published_metric_identities: set[str]
+    ) -> None:
+        """An alarm on a namespace/name/dimension set nobody publishes can never fire.
+
+        This is the check the previous suite was missing: it asserted the alarms existed, not that
+        their dimensions were the ones the handlers emit. A metric may be published by the handlers
+        (EMF) *or* by a log metric filter; both are legitimate, a third shape is not.
+        """
+        published = published_metric_identities | filter_metric_identities(stack)
+        checked = 0
+        for name, alarm in resources(stack, "aws_cloudwatch_metric_alarm").items():
+            for reference in alarm_metric_references(alarm):
+                if not reference.startswith("AgentReports/"):
+                    assert reference.startswith("AWS/"), f"{name}: {reference}"
+                    continue  # AWS service metrics are published by AWS, not by this package
+                assert reference in published, (
+                    f"{name} reads {reference}, which nothing publishes. Published: {sorted(published)}"
+                )
+                checked += 1
+        assert checked >= 3  # dispatcher_errors, report_lag, and the emails-not-sent expression
+
+    def test_the_no_emails_sent_alarm_is_metric_math_not_an_inverted_threshold(
+        self, stack: dict[str, Any]
+    ) -> None:
+        """``MessagesEnqueued > 0`` is true on every successful day - it must not be the alarm."""
+        alarm = resources(stack, "aws_cloudwatch_metric_alarm")["emails_not_sent"]
+        assert "metric_name" not in alarm, (
+            "a single-metric alarm cannot express 'ran but sent nothing'"
+        )
+        expression = " ".join(
+            str(flatten(query).get("expression", "")) for query in alarm["metric_query"]
+        )
+        assert "AND(" in expression
+        assert "delivered == 0" in expression
+        assert "enqueued > 0" in expression
+
+    def test_the_dispatcher_failure_filter_publishes_the_dimensions_the_alarm_reads(
+        self, stack: dict[str, Any]
+    ) -> None:
+        """M8: the filter had no ``dimensions`` block, so the alarm's datapoint never existed."""
+        transform = flatten(
+            resources(stack, "aws_cloudwatch_log_metric_filter")["dispatcher_failures"][
+                "metric_transformation"
+            ]
+        )
+        assert transform["name"] == "DispatchFailures"
+        assert normalise(transform["dimensions"]) == {"Service": "dispatcher"}
+        alarm = resources(stack, "aws_cloudwatch_metric_alarm")["dispatcher_errors"]
+        assert alarm["metric_name"] == "DispatchFailures"
+        assert normalise(alarm["dimensions"]) == {"Service": "dispatcher"}
+
+    def test_no_log_metric_filter_republishes_an_emf_identity(
+        self, stack: dict[str, Any], published_metric_identities: set[str]
+    ) -> None:
+        """The double-count guard: a metric must have exactly one publishing mechanism.
+
+        A CloudWatch metric is identified by namespace + name + full dimension set, so a metric
+        filter that emits the same identity the handlers already publish as EMF doubles every
+        ``Sum`` the alarms and dashboard read.
+        """
+        for name, body in resources(stack, "aws_cloudwatch_log_metric_filter").items():
+            transform = flatten(body["metric_transformation"])
+            reference = metric_identity(
+                str(transform["namespace"]),
+                str(transform["name"]),
+                normalise(transform.get("dimensions") or {}),
+            )
+            assert reference not in published_metric_identities, (
+                f"metric filter {name} republishes {reference}, which the handlers already emit as EMF"
+            )
+
+    def test_every_agent_reports_dashboard_reference_is_a_published_identity(
+        self, published_metric_identities: set[str]
+    ) -> None:
+        """M9: 4 of the dashboard's 8 references used dimension sets the code never published."""
+        references = dashboard_metric_references()
+        assert len(references) >= 8
+        for reference in references:
+            if not reference.startswith("AgentReports/"):
+                assert reference.startswith("AWS/"), reference
+                continue
+            assert reference in published_metric_identities, (
+                f"dashboard reads {reference}, which no handler publishes. Published: "
+                f"{sorted(published_metric_identities)}"
+            )
+
+    def test_no_published_identity_carries_a_per_day_dimension(
+        self, published_metric_identities: set[str]
+    ) -> None:
+        """A ReportDate dimension costs a metric-month per day and cannot be alarmed on."""
+        assert all("ReportDate" not in identity for identity in published_metric_identities)
 
     def test_schedules_run_aggregation_before_fanout(self, stack: dict[str, Any]) -> None:
         rules = resources(stack, "aws_cloudwatch_event_rule")
@@ -392,6 +671,20 @@ class TestEmrModule:
         for statement in statements:
             if "s3:PutObject" in statement["actions"]:
                 assert all("reports_bucket" in resource for resource in statement["resources"])
+
+    def test_the_log_permission_grants_something(self, emr_module: dict[str, Any]) -> None:
+        """A log ARN without the ``log-group:`` segment matches no resource and grants nothing."""
+        document = group(emr_module, "data")["aws_iam_policy_document"]["job_permissions"]
+        logs = [
+            statement
+            for statement in document["statement"]
+            if any(str(action).startswith("logs:") for action in statement["actions"])
+        ]
+        assert logs, "the job role must be able to write its own logs"
+        for statement in logs:
+            for resource in statement["resources"]:
+                assert "log-group:" in str(resource), resource
+                assert str(resource).endswith(":*"), resource
 
     def test_module_outputs_what_a_job_run_needs(self, emr_module: dict[str, Any]) -> None:
         outputs = block(emr_module, "output")

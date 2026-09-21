@@ -25,11 +25,11 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import Any, cast
 
-from ..common.aws import cloudwatch_client, sqs_client
+from ..common.aws import sqs_client
 from ..common.errors import AgentReportsError
 from ..common.keys import manifest_key, validate_agent_id, validate_report_date
 from ..common.logging_utils import configure_logging, get_logger, log_event
-from ..common.metrics import METRIC_NAMES, Metric, emit_emf, put_metric_data
+from ..common.metrics import METRIC_NAMES, Metric, emit_emf
 from ..common.retry import RetryPolicy, call_with_retry
 from ..common.roster import read_roster, report_agent_ids
 from ..common.settings import Settings, load_settings
@@ -148,7 +148,6 @@ def run_orchestrator(
     report_date: str,
     zones: Zones | None = None,
     sqs: Any = None,
-    cloudwatch: Any = None,
     requested_agent_ids: Sequence[str] | None = None,
     require_report: bool = True,
     emit_metrics: bool = True,
@@ -255,7 +254,9 @@ def run_orchestrator(
     log_event(_LOG, "fanout_completed", **result.as_dict())
 
     if emit_metrics:
-        dimensions = {"Service": "orchestrator", "ReportDate": report_date}
+        # ReportDate is a property, not a dimension - see the note in chunker.py (metric-month cost
+        # and un-alarmable metrics). The dimension set here is the one the dashboard and alarms use.
+        dimensions = {"Service": "orchestrator"}
         emit_emf(
             [
                 Metric(METRIC_NAMES["agents_discovered"], float(result.agents_discovered)),
@@ -263,16 +264,8 @@ def run_orchestrator(
                 Metric(METRIC_NAMES["batch_item_failures"], float(result.partial_batch_failures)),
             ],
             dimensions,
+            properties={"ReportDate": report_date},
         )
-        if cloudwatch is not None:
-            put_metric_data(
-                cloudwatch,
-                [
-                    Metric(METRIC_NAMES["agents_discovered"], float(result.agents_discovered)),
-                    Metric(METRIC_NAMES["messages_enqueued"], float(result.messages_enqueued)),
-                ],
-                dimensions,
-            )
 
     return result
 
@@ -296,7 +289,6 @@ def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
         report_date=report_date,
         zones=zones,
         sqs=sqs_client(settings),
-        cloudwatch=cloudwatch_client(settings),
         requested_agent_ids=requested,
         require_report=require_report,
     )

@@ -18,12 +18,14 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import boto3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from agent_reports.common.logging_utils import configure_logging, get_logger
+from agent_reports.common.metrics import Metric, put_metric_data
 from agent_reports.common.settings import Settings, load_settings
 from agent_reports.common.storage import open_zones
 from agent_reports.pipeline import PipelineOptions, run_local_pipeline
@@ -31,9 +33,14 @@ from agent_reports.testing import (
     provision_local_resources,
     sent_messages,
     verify_presigned_delivery,
+    verify_roster_recipients,
 )
 
 _LOG = get_logger("scripts.e2e_local")
+
+#: Namespace used for the one-off PutMetricData probe, kept out of the pipeline's own namespace so
+#: the probe can never be mistaken for a pipeline metric.
+PROBE_NAMESPACE = "AgentReportsSelfTest"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,7 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     with mock_aws():
         provision_local_resources(settings)
-        result = run_local_pipeline(settings, options)
+        # The SES sandbox only delivers to verified recipients, so every address the run will email
+        # is verified before the first send (the hook runs between aggregation and the fan-out).
+        verified: list[str] = []
+
+        def verify(zones: Any, report_date: str) -> None:
+            verified.extend(verify_roster_recipients(settings, zones, report_date))
+
+        result = run_local_pipeline(settings, options, before_dispatch=verify)
         zones = open_zones(settings)
         delivery = verify_presigned_delivery(
             settings,
@@ -110,13 +124,17 @@ def main(argv: list[str] | None = None) -> int:
             zones=zones,
         )
         captured = len(sent_messages(settings.region))
-        cloudwatch_metrics = sorted(
-            {
-                metric["MetricName"]
-                for metric in boto3.client("cloudwatch", region_name=settings.region)
-                .list_metrics(Namespace="AgentReports")
-                .get("Metrics", [])
-            }
+        # The pipeline publishes through EMF only (one path, so no sum is counted twice). Prove the
+        # PutMetricData path is still wired by writing and reading back a probe in its own namespace.
+        probe_client = boto3.client("cloudwatch", region_name=settings.region)
+        probe_sent = put_metric_data(
+            probe_client,
+            [Metric("PutMetricDataProbe", 1.0)],
+            {"Service": "e2e"},
+            namespace=PROBE_NAMESPACE,
+        )
+        probe_readback = len(
+            probe_client.list_metrics(Namespace=PROBE_NAMESPACE).get("Metrics", [])
         )
     wall_seconds = time.perf_counter() - started
 
@@ -164,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"agents processed    : {result.agents_reported:,}")
     print(f"reports written     : {result.reports_written:,}")
     print(f"emails sent         : {result.emails_sent:,} (SES captured {captured:,})")
+    print(
+        f"recipients verified : {len(verified):,} (every roster address; moto does NOT enforce the "
+        f"SES sandbox rule - see VERIFY.md)"
+    )
     print(f"duplicates / failed : {result.duplicates} / {result.failed}")
     print(f"queue drained       : {'yes' if result.queue_drained else 'NO'}")
     print(f"dlq depth           : {result.dlq_messages}")
@@ -172,9 +194,12 @@ def main(argv: list[str] | None = None) -> int:
         f"metrics emitted     : {result.metrics_emitted} EMF documents "
         f"({', '.join(result.metric_names)})"
     )
+    print(f"metric identities   : {len(result.metric_identities)} namespace/name/dimension sets")
+    for identity in result.metric_identities:
+        print(f"                      {identity}")
     print(
-        f"cloudwatch metrics  : {len(cloudwatch_metrics)} published "
-        f"({', '.join(cloudwatch_metrics)})"
+        f"cloudwatch api probe: {probe_sent} datapoint(s) written, {probe_readback} metric(s) "
+        f"read back from {PROBE_NAMESPACE}"
     )
     print(
         f"pre-signed link     : HTTP {delivery['http_status']}, {delivery['bytes']:,} bytes, "

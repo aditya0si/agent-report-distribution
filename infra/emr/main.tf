@@ -173,7 +173,9 @@ data "aws_iam_policy_document" "job_permissions" {
       "logs:CreateLogStream",
       "logs:PutLogEvents",
     ]
-    resources = ["arn:aws:logs:*:*:/aws/emr-serverless*"]
+    # Log ARNs need the `log-group:` resource-type segment; without it the ARN does not match any
+    # resource and the statement grants nothing. The trailing `:*` covers every stream in the group.
+    resources = ["arn:aws:logs:*:*:log-group:/aws/emr-serverless*:*"]
   }
 }
 
