@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# Node (tooling only)
+node_modules/
+npm-debug.log*
+
+# Data + local artifacts
+data/
+out/
+*.log
+logs/
+
+# Secrets / env
+.env
+.env.*
+!.env.example
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local JVM/toolchain drops (installed outside the repo, listed for safety)
+tools/

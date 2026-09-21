@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-report-distribution"
+version = "1.0.0"
+description = "Agent-wise report distribution pipeline (S3 + EMR/Spark + Lambda + SQS + SES) with an offline moto test path"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Aditya Singh" }]
+dependencies = [
+    "boto3>=1.35,<2",
+]
+
+[project.optional-dependencies]
+spark = ["pyspark>=3.5,<4"]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "moto[s3,sqs,ses,cloudwatch,logs,emr,emrserverless]>=5.0",
+    "boto3-stubs[s3,sqs,ses,cloudwatch,logs,emr,emr-serverless,lambda]>=1.35",
+    "ruff>=0.8",
+    "mypy>=1.14",
+    "python-hcl2>=7.0",
+]
+
+[project.scripts]
+agent-reports = "agent_reports.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agent_reports = ["templates/*.txt", "templates/*.html"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+extend-exclude = [".venv", "build", "dist", "infra/terraform/.terraform"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "PTH", "RUF"]
+ignore = [
+    "E501",   # line length is handled by the formatter settings above
+    "B008",   # function call in default arg is intentional for dependency injection kwargs
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/agent_reports/emr/jobs/*" = ["E402"]  # spark imports happen after env setup
+"tests/**" = ["ARG001"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "scripts", "tests"]
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_return_any = true
+warn_redundant_casts = true
+strict_equality = true
+show_error_codes = true
+pretty = false
+exclude = "(^|/)build/"
+
+[[tool.mypy.overrides]]
+module = ["hcl2", "hcl2.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "requires_jvm: needs a JVM on PATH/JAVA_HOME (auto-skipped loudly if java is absent)",
+    "spark: runs a real local PySpark session",
+]
+filterwarnings = ["error::DeprecationWarning:agent_reports.*"]
+
+[tool.coverage.run]
+source = ["agent_reports"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
