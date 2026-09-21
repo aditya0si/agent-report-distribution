@@ -13,7 +13,7 @@ import io
 import pytest
 
 from agent_reports.common.report import REPORT_COLUMNS
-from agent_reports.emr.jobs.agent_report_job import insert_agent_column
+from agent_reports.emr.jobs.agent_report_job import insert_agent_column, session_config
 
 #: What Spark's partitioned writer emits: the partition column is dropped from the file content.
 #: The two DETAIL rows are deliberately in descending policy_id order - the finalizer must sort them.
@@ -102,3 +102,48 @@ class TestInsertAgentColumn:
             insert_agent_column(
                 part_file(SPARK_HEADER, SPARK_DETAIL_1, SPARK_TOTAL, SPARK_TOTAL), "AGT-000001"
             )
+
+
+class TestSessionConfig:
+    """The Spark configuration is built in plain Python, so it is pinned without a JVM."""
+
+    def test_defaults_are_emr_safe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SPARK_LOCAL_IP", raising=False)
+        monkeypatch.delenv("HADOOP_HOME", raising=False)
+        config = session_config(master=None)
+        assert config["spark.ui.enabled"] == "false"
+        assert config["spark.sql.session.timeZone"] == "UTC"
+        assert config["spark.sql.shuffle.partitions"] == "16"
+        assert config["spark.hadoop.fs.file.impl"].endswith("RawLocalFileSystem")
+        # A cluster master must not pin a driver address: on EMR the laptop's address is wrong.
+        assert "spark.driver.host" not in config
+        assert "spark.driver.bindAddress" not in config
+
+    def test_local_master_gets_the_laptop_hardening(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SPARK_LOCAL_IP", "127.0.0.1")
+        monkeypatch.delenv("HADOOP_HOME", raising=False)
+        config = session_config(master="local[2]")
+        assert config["spark.driver.host"] == "127.0.0.1"
+        assert config["spark.driver.bindAddress"] == "127.0.0.1"
+        # Local runs get wider patience windows than a cluster: a coverage tracer is slow.
+        assert int(config["spark.python.worker.timeout"]) >= 600
+        assert int(config["spark.network.timeout"]) >= 600
+
+    def test_hadoop_home_reaches_the_jvm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HADOOP_HOME", "C:/tools/hadoop/")
+        config = session_config(master="local[2]")
+        expected = "-Djava.library.path=C:/tools/hadoop/bin"
+        assert config["spark.driver.extraJavaOptions"] == expected
+        assert config["spark.executor.extraJavaOptions"] == expected
+        assert config["spark.hadoop.hadoop.home.dir"] == "C:/tools/hadoop/"
+
+    def test_extra_config_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SPARK_LOCAL_IP", "127.0.0.1")
+        config = session_config(
+            master="local[2]",
+            extra_config={"spark.sql.shuffle.partitions": "4", "spark.ui.enabled": "true"},
+        )
+        assert config["spark.sql.shuffle.partitions"] == "4"
+        assert config["spark.ui.enabled"] == "true"
+        # ... and the untouched keys survive the merge.
+        assert config["spark.sql.session.timeZone"] == "UTC"

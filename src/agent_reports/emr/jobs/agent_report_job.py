@@ -40,7 +40,7 @@ __all__ = [
     "REPORT_COLUMNS",
     "aggregate_details",
     "build_report_frame",
-    "build_spark_session",
+    "build_session",
     "finalize_report_layout",
     "insert_agent_column",
     "main",
@@ -56,24 +56,16 @@ DETAIL_RANK, TOTAL_RANK = 0, 1
 DEFAULT_SHUFFLE_PARTITIONS = "16"
 
 
-def build_spark_session(
-    app_name: str = "agent-report-aggregation",
-    *,
-    master: str | None = None,
-    extra_config: dict[str, str] | None = None,
-) -> Any:
-    """Create a SparkSession that behaves on a laptop, on Windows, and on EMR.
+def session_config(
+    master: str | None, extra_config: dict[str, str] | None = None
+) -> dict[str, str]:
+    """The Spark configuration this job uses, as a plain dict (so it is testable without a JVM).
 
     ``SPARK_LOCAL_IP``/``PYSPARK_PYTHON`` are honoured when set (the local test fixture sets them);
     on EMR they are irrelevant because the master is not ``local``. ``fs.file.impl`` is pinned to
     ``RawLocalFileSystem`` so local runs do not litter output directories with Hadoop ``.crc``
     checksum files.
     """
-    from pyspark.sql import SparkSession
-
-    builder = SparkSession.builder.appName(app_name)
-    if master:
-        builder = builder.master(master)
     config: dict[str, str] = {
         "spark.ui.enabled": "false",
         "spark.sql.session.timeZone": "UTC",
@@ -85,6 +77,14 @@ def build_spark_session(
         # Windows/laptop hardening: the driver must advertise an address the Python worker can reach.
         config.setdefault("spark.driver.host", os.environ.get("SPARK_LOCAL_IP", "127.0.0.1"))
         config.setdefault("spark.driver.bindAddress", os.environ.get("SPARK_LOCAL_IP", "127.0.0.1"))
+        # A laptop running the job under a coverage tracer (or next to a JVM-heavy build) can take
+        # far longer than a cluster to service a Python worker callback. These are patience windows,
+        # not task deadlines, so widening them locally removes a flake without hiding a real hang:
+        # a genuinely stuck worker still fails, just after a longer wait. (Assigned rather than
+        # ``setdefault``-ed: the cluster defaults above already set the key, so setdefault would be
+        # a silent no-op.)
+        config["spark.python.worker.timeout"] = "600"
+        config["spark.network.timeout"] = "600"
         hadoop_home = os.environ.get("HADOOP_HOME")
         if hadoop_home:
             # Windows local FS access needs hadoop.dll on java.library.path; HADOOP_HOME/bin holds
@@ -95,7 +95,22 @@ def build_spark_session(
             config.setdefault("spark.executor.extraJavaOptions", options)
             config.setdefault("spark.hadoop.hadoop.home.dir", hadoop_home)
     config.update(extra_config or {})
-    for key, value in config.items():
+    return config
+
+
+def build_session(
+    app_name: str = "agent-report-aggregation",
+    *,
+    master: str | None = None,
+    extra_config: dict[str, str] | None = None,
+) -> Any:
+    """Create a SparkSession that behaves on a laptop, on Windows, and on EMR."""
+    from pyspark.sql import SparkSession
+
+    builder = SparkSession.builder.appName(app_name)
+    if master:
+        builder = builder.master(master)
+    for key, value in session_config(master, extra_config).items():
         builder = builder.config(key, value)
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
@@ -515,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    spark = build_spark_session(master=args.master)
+    spark = build_session(master=args.master)
     try:
         summary = run_job(
             spark,

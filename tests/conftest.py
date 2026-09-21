@@ -155,9 +155,9 @@ def spark() -> Iterator[Any]:
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
-    from agent_reports.emr.jobs.agent_report_job import build_spark_session
+    from agent_reports.emr.jobs.agent_report_job import build_session
 
-    session = build_spark_session(app_name="agent-report-tests", master="local[2]")
+    session = build_session(app_name="agent-report-tests", master="local[2]")
     try:
         yield session
     finally:

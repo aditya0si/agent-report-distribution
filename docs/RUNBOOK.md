@@ -37,7 +37,7 @@ Windows notes that cost real debugging time:
   `HADOOP_HOME` at the parent of `bin/`;
 - if the hostname resolves to a link-local IPv6 address, the Python worker cannot call back to the
   driver (`Python worker failed to connect back`); `SPARK_LOCAL_IP=127.0.0.1` and an explicit
-  `PYSPARK_PYTHON` fix it. `build_spark_session()` sets the driver host/bind address from
+  `PYSPARK_PYTHON` fix it. `build_session()` sets the driver host/bind address from
   `SPARK_LOCAL_IP` and `java.library.path` from `HADOOP_HOME` automatically.
 
 ## 2. Deploy to real AWS
