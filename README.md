@@ -62,9 +62,14 @@ flowchart LR
    `raw/dt=YYYY-MM-DD/source=agents|policies|claims/part-NNNNN.csv` — ≥50k rows by default, seeded,
    no PII.
 2. **Aggregate** — either the **chunker** Lambda (free tier: streams the raw partitions and writes
-   one CSV per agent) or the **PySpark job** (`emr/jobs/agent_report_job.py`, deployed to EMR
-   Serverless). Both write `reports/dt=YYYY-MM-DD/agent_id=AGT-000123/report.csv`, one `DETAIL` row
-   per policy sorted by policy id plus one `TOTAL` row.
+   one CSV per agent) or the **PySpark job** (`emr/jobs/agent_report_job.py`). Both write
+   `reports/dt=YYYY-MM-DD/agent_id=AGT-000123/report.csv`, one `DETAIL` row per policy sorted by
+   policy id plus one `TOTAL` row.
+
+   The Spark path is packaged for EMR Serverless but **not yet deployed there**: `infra/emr` creates
+   the application, execution role and policy, and nothing uploads the job artifact or starts a job
+   run, so every Spark number in this repo comes from a local `local[2]` session. Wiring
+   `aws_s3_object` + `aws_emrserverless_job_run` is the remaining work, not a thing already done.
 3. **Fan out** — the **orchestrator** reads the day's roster and the set of agents that actually have
    a report, then `SendMessageBatch`es one message per agent (retrying the entries SQS rejects) and
    writes `state/runs/dt=YYYY-MM-DD/manifest.json`.
